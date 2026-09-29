@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#a1c4fd">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Шахматы">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="description" content="Шахматное Королевство — весёлые шахматы для детей: уроки, задачки и игра с добрыми соперниками.">
+  <title>Шахматное Королевство</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&amp;display=swap" media="print" onload="this.media='all'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&amp;display=swap"></noscript>
+  <link rel="stylesheet" href="css/style.css"><link rel="stylesheet" href="css/board.css"><link rel="stylesheet" href="css/learn.css"><link rel="stylesheet" href="css/transfer.css">
+</head>
+<body data-screen="home">
+  <!-- Decorative animated background -->
+  <div class="bg" aria-hidden="true">
+    <div class="bg-blob bg-blob-1"></div>
+    <div class="bg-blob bg-blob-2"></div>
+    <div class="bg-blob bg-blob-3"></div>
+    <div class="bg-pieces" id="bg-pieces"></div>
+  </div>
+
+  <!-- Top bar -->
+  <header class="topbar" id="topbar">
+    <button class="tb-btn" id="btn-home" type="button" aria-label="На главную" title="На главную">🏠</button>
+    <button class="tb-logo" id="tb-logo" type="button" aria-label="Шахматное Королевство — на главную">
+      <span class="tb-crown" aria-hidden="true">👑</span>
+      <span class="tb-title">Шахматное Королевство</span>
+    </button>
+    <span class="tb-spacer"></span>
+    <button class="chip star-chip" id="btn-stars" type="button" aria-label="Мои звёзды и награды" title="Мои награды">
+      <span class="star-chip-ico" aria-hidden="true">⭐</span><span id="star-count">0</span>
+    </button>
+    <button class="tb-btn" id="btn-sound" type="button" aria-label="Выключить звук" title="Звук">🔊</button>
+    <button class="tb-btn" id="btn-settings" type="button" aria-label="Настройки" title="Настройки">⚙️</button>
+  </header>
+
+  <main id="screens">
+    <!-- HOME -->
+    <section class="screen" id="screen-home" aria-label="Главная">
+      <h1 class="big-title" id="big-title" aria-label="Шахматное Королевство">Шахматное Королевство</h1>
+
+      <div class="continue-banner" id="continue-banner" hidden>
+        <span class="continue-ico" id="continue-ico" aria-hidden="true">♟️</span>
+        <span class="continue-text" id="continue-text">У тебя есть незаконченная партия.</span>
+        <button class="btn btn-green btn-big" id="btn-continue" type="button">▶️ Продолжить партию</button>
+      </div>
+
+      <div class="home-hero">
+        <div class="home-mascot" id="home-mascot"></div>
+        <div class="card home-progress" id="home-progress"></div>
+      </div>
+
+      <div class="tiles" id="home-tiles">
+        <button class="tile tile-ai" type="button" data-action="ai">
+          <span class="tile-art" aria-hidden="true">🐣🦊🐻🦉</span>
+          <span class="tile-title">Играть с компьютером</span>
+          <span class="tile-sub">Выбери соперника — от цыплёнка до мудрой совы</span>
+          <span class="tile-meta" data-meta="ai"></span>
+          <span class="tile-deco" data-deco="w:n" aria-hidden="true"></span>
+        </button>
+        <button class="tile tile-pvp" type="button" data-action="pvp">
+          <span class="tile-art" aria-hidden="true">👫</span>
+          <span class="tile-title">Играть вдвоём</span>
+          <span class="tile-sub">с мамой, папой или другом</span>
+          <span class="tile-meta" data-meta="pvp"></span>
+          <span class="tile-deco" data-deco="b:k" aria-hidden="true"></span>
+        </button>
+        <button class="tile tile-learn" type="button" data-action="lessons">
+          <span class="tile-art" aria-hidden="true">🎓</span>
+          <span class="tile-title">Как ходят фигуры</span>
+          <span class="tile-sub">Уроки со звёздочками</span>
+          <span class="tile-meta" data-meta="lessons"></span>
+          <span class="tile-deco" data-deco="w:r" aria-hidden="true"></span>
+        </button>
+        <button class="tile tile-puzzles" type="button" data-action="puzzles">
+          <span class="tile-art" aria-hidden="true">🧩</span>
+          <span class="tile-title">Задачки</span>
+          <span class="tile-sub">Мат в 1 и 2 хода, вилки</span>
+          <span class="tile-meta" data-meta="puzzles"></span>
+          <span class="tile-deco" data-deco="b:q" aria-hidden="true"></span>
+        </button>
+        <button class="tile tile-awards" type="button" data-action="awards">
+          <span class="tile-art" aria-hidden="true">🏆</span>
+          <span class="tile-title">Мои награды</span>
+          <span class="tile-sub">Звёзды и медали</span>
+          <span class="tile-meta" data-meta="awards"></span>
+          <span class="tile-deco" data-deco="w:k" aria-hidden="true"></span>
+        </button>
+      </div>
+    </section>
+
+    <!-- OPPONENTS -->
+    <section class="screen" id="screen-opponents" aria-label="Выбор соперника">
+      <div class="screen-header">
+        <h2>С кем сыграем?</h2>
+        <div class="screen-actions">
+          <button class="btn btn-ghost" type="button" data-go="home">⬅️ Назад</button>
+        </div>
+      </div>
+      <div class="color-pick card">
+        <span class="color-pick-label">Каким цветом будешь играть?</span>
+        <div class="segmented" id="color-choice" role="radiogroup" aria-label="Цвет фигур">
+          <button type="button" class="seg" role="radio" data-color="w"><span aria-hidden="true">⚪</span> Белые</button>
+          <button type="button" class="seg" role="radio" data-color="b"><span aria-hidden="true">⚫</span> Чёрные</button>
+          <button type="button" class="seg" role="radio" data-color="random"><span aria-hidden="true">🎲</span> Случайно</button>
+        </div>
+        <span class="color-pick-note" id="color-note"></span>
+      </div>
+      <div class="opp-grid" id="opp-grid"></div>
+    </section>
+
+    <!-- GAME -->
+    <section class="screen" id="screen-game" aria-label="Партия">
+      <div class="game-layout">
+        <aside class="panel game-left" aria-label="Помощник">
+          <div class="game-mascot" id="game-mascot"></div>
+          <div class="game-mode" id="game-mode"></div>
+        </aside>
+
+        <div class="game-center">
+          <div class="strip" id="strip-top"></div>
+          <div class="board-host" id="game-board"></div>
+          <div class="strip" id="strip-bottom"></div>
+        </div>
+
+        <aside class="panel game-right" aria-label="Кнопки и ходы">
+          <div class="game-over-card" id="game-over-card" hidden></div>
+          <div class="game-actions">
+            <button class="btn btn-yellow" id="btn-hint" type="button"><span class="ico" aria-hidden="true">💡</span><span>Подсказка</span></button>
+            <button class="btn btn-secondary" id="btn-undo" type="button"><span class="ico" aria-hidden="true">↩️</span><span>Ход назад</span></button>
+            <button class="btn btn-ghost" id="btn-flip" type="button"><span class="ico" aria-hidden="true">🔄</span><span>Перевернуть</span></button>
+            <button class="btn btn-green" id="btn-new" type="button"><span class="ico" aria-hidden="true">✨</span><span>Новая игра</span></button>
+          </div>
+          <div class="moves">
+            <div class="moves-title">📜 Ходы</div>
+            <div class="moves-list" id="moves-list"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- AWARDS -->
+    <section class="screen" id="screen-awards" aria-label="Мои награды">
+      <div class="screen-header">
+        <h2>🏆 Мои награды</h2>
+        <div class="screen-actions">
+          <span class="chip chip-stars" id="awards-stars">⭐ 0</span>
+          <button class="btn btn-ghost" type="button" data-go="home">⬅️ Назад</button>
+        </div>
+      </div>
+      <div class="awards-stats" id="awards-stats"></div>
+      <h3 class="section-title">Медали</h3>
+      <div class="badges" id="awards-grid"></div>
+    </section>
+
+    <!-- LEARN (rendered by js/learn.js) -->
+    <section class="screen" id="screen-lessons" aria-label="Уроки"></section>
+    <section class="screen" id="screen-lesson" aria-label="Урок"></section>
+    <section class="screen" id="screen-puzzles" aria-label="Задачки"></section>
+    <section class="screen" id="screen-puzzle" aria-label="Задачка"></section>
+  </main>
+
+  <!-- Safety net prompt («Страховка») -->
+  <div class="safety-bar" id="safety-bar" role="alertdialog" aria-live="assertive" hidden>
+    <span class="safety-ico" aria-hidden="true">🛟</span>
+    <span class="safety-text" id="safety-text"></span>
+    <span class="safety-buttons">
+      <button class="btn btn-primary" id="safety-undo" type="button">↩️ Переходить</button>
+      <button class="btn btn-ghost" id="safety-keep" type="button">Оставить так</button>
+    </span>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+
+  <noscript>
+    <div class="noscript">Чтобы играть, включи JavaScript в браузере 🙂</div>
+  </noscript>
+
+  <script src="js/engine.js"></script>
+  <script src="js/ai.js"></script>
+  <script src="js/lessons.js"></script>
+  <script src="js/pieces.js"></script>
+  <script src="js/sound.js"></script>
+  <script src="js/fx.js"></script>
+  <script src="js/board.js"></script>
+  <script src="js/learn.js"></script>
+  <script src="js/cloud.js"></script>
+  <script src="js/transfer.js"></script>
+  <script src="js/pwa.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

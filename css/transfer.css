@@ -1,0 +1,105 @@
+/* =====================================================================================================
+   «Шахматное Королевство» — progress transfer (settings section + «Вставить код» dialog) and the
+   «Добавь игру на экран Домой» hint card on the home screen. Uses the design tokens from style.css.
+   ===================================================================================================== */
+
+/* ------------------------------------------------------------------------ settings: «Перенести прогресс» */
+.set-transfer {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px; border-radius: 20px;
+  background: linear-gradient(140deg, #f3f1ff, #eaf6ff);
+  box-shadow: inset 0 0 0 2px var(--c-line, #e7e4f7);
+}
+.set-transfer .set-label-big { margin-bottom: 0; }
+.tr-note { font-size: 14px; font-weight: 700; line-height: 1.35; color: var(--c-muted, #6b6890); }
+.tr-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.tr-actions .btn { flex: 1 1 auto; min-height: 52px; font-size: 17px; }
+.tr-out { display: flex; flex-direction: column; gap: 8px; animation: trIn .35s var(--ease-out, ease) both; }
+.tr-code, .tr-input {
+  display: block; width: 100%; resize: none;
+  font: 700 16px/1.35 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;   /* ≥ 16px: no iOS focus zoom */
+  color: var(--c-ink, #2d2a4a);
+  word-break: break-all; overflow-wrap: anywhere;
+  -webkit-user-select: text; user-select: text;
+}
+.tr-code {
+  min-height: 84px; max-height: 140px; padding: 10px 12px;
+  border: 2px dashed #c9c3f0; border-radius: 14px; background: #fff; outline: none;
+}
+.tr-code:focus { border-color: var(--c-violet, #6c63ff); }
+.tr-status { font-size: 14px; font-weight: 800; line-height: 1.35; color: var(--c-muted, #6b6890); }
+.tr-status:empty { display: none; }
+.tr-status.is-ok { color: var(--c-green-d, #1f9d55); }
+.tr-share { align-self: flex-start; min-height: 48px; }
+
+/* --------------------------------------------------------------------------- «Вставить код» dialog */
+.modal-transfer { width: min(560px, 100%); }
+.modal-transfer .modal-body { text-align: left; display: flex; flex-direction: column; gap: 10px; }
+.tr-lead { font-size: 17px; font-weight: 800; color: var(--c-ink, #2d2a4a); text-align: center; }
+.tr-input { min-height: 118px; padding: 12px 14px; font-size: 16px; }
+.tr-read { align-self: center; min-height: 48px; font-size: 16px; }
+.tr-error {
+  padding: 10px 14px; border-radius: 14px; background: #ffecec; color: #c62828;
+  font-size: 16px; font-weight: 900; text-align: center;
+  animation: trIn .3s var(--ease-bounce, ease) both;
+}
+.tr-preview {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 18px;
+  background: #fff8dc; box-shadow: inset 0 0 0 3px #ffe28a;
+  animation: trIn .4s var(--ease-bounce, ease) both;
+}
+.tr-prev-title { font-size: 16px; font-weight: 900; color: var(--c-ink, #2d2a4a); overflow-wrap: anywhere; }
+.tr-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tr-chips .chip { font-size: 15px; }
+.tr-prev-note { font-size: 14px; font-weight: 800; color: var(--c-muted, #6b6890); }
+.tr-prev-note.is-same { font-size: 16px; color: var(--c-green-d, #1f9d55); }
+.tr-warn {
+  padding: 8px 12px; border-radius: 12px; background: #fff0e6; color: #b3470f;
+  font-size: 15px; font-weight: 900; line-height: 1.35; overflow-wrap: anywhere;
+}
+@keyframes trIn { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* ------------------------------------------------------------------ home: «Добавь игру на экран Домой» */
+.a2hs-hint {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 14px;
+  margin: 0 auto 18px; max-width: 900px;
+  padding: 14px 58px 14px 16px; border-radius: 22px;
+  background: linear-gradient(135deg, #fffbe6, #e9f7ff);
+  box-shadow: var(--shadow-sm, 0 4px 14px rgba(60, 50, 120, .14)), inset 0 0 0 3px #ffe28a;
+  animation: trIn .5s var(--ease-bounce, ease) both;
+}
+.a2hs-hint.out { animation: a2hsOut .3s ease both; }
+@keyframes a2hsOut { to { opacity: 0; transform: translateY(-8px) scale(.96); } }
+.a2hs-ico { flex: none; font-size: 38px; line-height: 1; }
+.a2hs-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 15px; font-weight: 800; color: var(--c-muted, #6b6890); line-height: 1.35; }
+.a2hs-text b { font-size: 18px; font-weight: 900; color: var(--c-ink, #2d2a4a); }
+.a2hs-share { display: inline-block; }
+.a2hs-note {
+  margin-top: 4px; padding-top: 6px; border-top: 2px dashed #ffe28a;
+  font-size: 14px; font-weight: 800; color: var(--c-ink, #2d2a4a);
+}
+
+/* ------------------------------------------------------------ welcome: «📥 У меня есть код прогресса» */
+.welcome-code { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 16px; }
+.welcome-code p { font-size: 15px; font-weight: 800; line-height: 1.35; color: var(--c-muted, #6b6890); }
+.welcome-code .btn { min-height: 48px; font-size: 16px; }
+.a2hs-close {
+  position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+  width: 44px; height: 44px; border: 0; border-radius: 14px; cursor: pointer;
+  background: rgba(255, 255, 255, .85); color: var(--c-muted, #6b6890); font: 900 18px/1 var(--font, sans-serif);
+  box-shadow: 0 2px 6px rgba(60, 50, 120, .12);
+}
+.a2hs-close:hover { color: var(--c-ink, #2d2a4a); background: #fff; }
+
+/* ------------------------------------------------------------------------------------------ narrow */
+@media (max-width: 560px) {
+  .set-transfer { padding: 12px; }
+  .tr-actions .btn { flex-basis: 100%; }
+  .tr-share { align-self: stretch; }
+  .a2hs-hint { gap: 10px; padding: 12px 52px 12px 12px; }
+  .a2hs-ico { font-size: 30px; }
+  .a2hs-text b { font-size: 16px; }
+  .a2hs-text { font-size: 14px; }
+  .a2hs-note { font-size: 13px; }
+}
