@@ -21,7 +21,7 @@
  */
 'use strict';
 
-const VERSION = '9c02d9efdaf9';
+const VERSION = 'b2dbf71d2910';
 
 const PRECACHE = [
   'index.html',
@@ -34,6 +34,10 @@ const PRECACHE = [
   'js/ai.js',
   'js/ai-worker.js',
   'js/lessons.js',
+  'js/content-v3-lessons.js',
+  'js/content-v3-mates.js',
+  'js/content-v3-tactics.js',
+  'js/puzzle-pool.js',
   'js/pieces.js',
   'js/sound.js',
   'js/fx.js',

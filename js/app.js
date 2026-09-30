@@ -230,7 +230,18 @@
     { id: 'mate2_all', emoji: '🏅', title: 'Мастер двух ходов', desc: 'Реши все задачки «Мат в 2 хода»' },
     { id: 'win_first', emoji: '🍴', title: 'Первая добыча', desc: 'Выиграй фигуру в задачке' },
     { id: 'win_all', emoji: '⚔️', title: 'Юный тактик', desc: 'Реши все задачки «Выиграй фигуру»' },
-    { id: 'fork_lesson', emoji: '🔱', title: 'Вилка!', desc: 'Пройди урок «Вилка»' }
+    { id: 'fork_lesson', emoji: '🔱', title: 'Вилка!', desc: 'Пройди урок «Вилка»' },
+    // content v3 (appended, ids stable)
+    { id: 'mate3_first', emoji: '🏆', title: 'Три хода до мата', desc: 'Реши первую задачку «Мат в 3 хода»' },
+    { id: 'mate3_all', emoji: '👑', title: 'Гроссмейстер мата', desc: 'Реши все задачки «Мат в 3 хода»' },
+    { id: 'save_first', emoji: '🛡️', title: 'Спасатель', desc: 'Реши первую задачку «Спасайся!»' },
+    { id: 'save_all', emoji: '🦸', title: 'Супер-защитник', desc: 'Реши все задачки «Спасайся!»' },
+    { id: 'endgame_first', emoji: '♔', title: 'Мат одинокому королю', desc: 'Победи одинокого короля в первый раз' },
+    { id: 'endgame_all', emoji: '🎓', title: 'Мастер эндшпиля', desc: 'Реши все задачки «Мат одинокому королю»' },
+    { id: 'trainer_10', emoji: '🔥', title: 'Горячая десятка', desc: 'Реши 10 задачек в тренажёре' },
+    { id: 'trainer_50', emoji: '💎', title: 'Алмазный ум', desc: 'Реши 50 задачек в тренажёре' },
+    { id: 'trainer_streak_10', emoji: '⚡', title: '10 подряд', desc: 'Реши в тренажёре 10 задачек подряд без ошибок' },
+    { id: 'lessons_v3', emoji: '🌟', title: 'Все новые уроки', desc: 'Пройди все новые уроки' }
   ];
   var ACH_MAP = {};
   ACHIEVEMENTS.forEach(function (a) { ACH_MAP[a.id] = a; });
@@ -826,6 +837,7 @@
 
     if (name === 'home') {
       renderHome(true);
+      if (prev) { clearTimeout(newsTimer); newsTimer = setTimeout(function () { if (currentScreen === 'home') maybeShowNews(); }, 900); }
       if (prev && gestureSeen && Date.now() - lastGreetAt > 180000) {
         lastGreetAt = Date.now();
         if (homeMascot) speak(homeMascot.text);
@@ -955,10 +967,16 @@
     });
     return { done: done, total: list ? list.length : 0, sets: sets };
   }
-  // puzzles tile subtitle follows the available sets (index.html holds the v2 text as the pre-script default)
+  // puzzles tile subtitle follows the available sets (index.html holds the v3 text as the pre-script default)
   function puzzlesTileSub(sets) {
     var has = {};
-    sets.forEach(function (s) { has[s.id] = true; });
+    sets.forEach(function (s) { has[s.endless ? 'trainer' : s.id] = true; });
+    if (has.mate3 || has.save || has.trainer) {
+      var parts = [has.mate3 ? 'Мат в 1–3 хода' : has.mate2 ? 'Мат в 1 и 2 хода' : 'Мат в 1 ход'];
+      if (has.save) parts.push('защита');
+      if (has.trainer) parts.push('тренажёр');
+      return parts.join(', ');
+    }
     if (has.mate2 && has.win) return 'Мат в 1 и 2 хода, вилки';
     if (has.mate2) return 'Мат в 1 и 2 хода';
     if (has.win) return 'Мат в 1 ход и вилки';
@@ -1026,6 +1044,7 @@
     var pzSub = puzzlesTileSub(pp.sets);
     var pzSubEl = pzSub ? $('.tile-puzzles .tile-sub') : null;
     if (pzSubEl && pzSubEl.textContent !== pzSub) pzSubEl.textContent = pzSub;
+    try { renderTileNews(); } catch (e) { logErr('renderTileNews', e); }
     try { renderA2hsHint(); } catch (e) { logErr('renderA2hsHint', e); }
 
     // "continue" banner (an unfinished game in memory or restored from storage after a reload)
@@ -3008,7 +3027,7 @@
       }
       // one-level copy of the progress before the import (a parent can restore it by hand), like «Сбросить прогресс»
       try { if (global.localStorage) global.localStorage.setItem(STORE_KEY + '.backup-import', JSON.stringify(App.profile)); } catch (e) { /* ignore */ }
-      applyImportedProfile(merged);
+      applyImportedProfile(merged, incoming);
       keepImportAfterCloud(T, incoming);
       hnd.close();
       if (parentModal && !parentModal.closed) parentModal.close();
@@ -3056,12 +3075,13 @@
       var again;
       try { again = T.importInto(App.profile, incoming); } catch (e) { logErr('Transfer.importInto', e); return; }
       if (typeof T.sameProgress === 'function' && T.sameProgress(App.profile, again)) return;
-      applyImportedProfile(again);
+      applyImportedProfile(again, incoming);
     });
   }
 
-  // Adopt a merged profile (import) and redraw everything that shows progress.
-  function applyImportedProfile(merged) {
+  // Adopt a merged profile (import) and redraw everything that shows progress. incoming = the code's own profile.
+  function applyImportedProfile(merged, incoming) {
+    unmarkFreshStart(incoming || merged);
     App.profile = sanitizeProfile(merged);
     App.save();
     applySettings({ initial: true });
@@ -3143,6 +3163,7 @@
     p.stats = defaultStats();
     p.resetAt = Date.now();
     App.save();
+    markFreshStart();
     renderStarCount(false);
     var L = global.Learn;
     if (currentScreen === 'home') renderHome();
@@ -3158,6 +3179,169 @@
   }
 
   // =================================================================================================
+  // «Смотри, сколько нового!» — once per content version (Lessons.CONTENT_VERSION), for a child who already
+  // played the older content. Per-device memory: localStorage 'chessKingdom.v1.seenContent' = the last version seen.
+  // =================================================================================================
+  var SEEN_CONTENT_KEY = 'chessKingdom.v1.seenContent';
+  // the content version this device's profile started from scratch with (first launch or «Сбросить прогресс»): for
+  // such a child everything is new — no «Новое в Королевстве!» and no «Новое!» stickers for that version
+  var FRESH_CONTENT_KEY = 'chessKingdom.v1.freshContent';
+  var newsShownFor = 0, newsTimer = 0;
+  function contentVersion() {
+    var v = global.Lessons ? Number(global.Lessons.CONTENT_VERSION) : 0;
+    return isFinite(v) && v > 0 ? Math.floor(v) : 0;
+  }
+  function seenContent() {
+    try {
+      var v = Number(global.localStorage ? global.localStorage.getItem(SEEN_CONTENT_KEY) : 0);
+      return isFinite(v) && v > 0 ? v : 0;
+    } catch (e) { return 0; }
+  }
+  function markContentSeen(v) {
+    newsShownFor = v;
+    try { if (global.localStorage) global.localStorage.setItem(SEEN_CONTENT_KEY, String(v)); } catch (e) { /* storage may be blocked */ }
+  }
+  function freshContent() {
+    try {
+      var v = Number(global.localStorage ? global.localStorage.getItem(FRESH_CONTENT_KEY) : 0);
+      return isFinite(v) && v > 0 ? v : 0;
+    } catch (e) { return 0; }
+  }
+  // a new player (welcome dialog) or a reset profile: the current content is not «new» for them
+  function markFreshStart() {
+    var v = contentVersion();
+    if (!v || hasOldProgress(v)) return;
+    markContentSeen(v);
+    try { if (global.localStorage) global.localStorage.setItem(FRESH_CONTENT_KEY, String(v)); } catch (e) { /* storage may be blocked */ }
+  }
+  // progress from an older version arrived with a transfer code on a «fresh» device: it is a returning player after all
+  function unmarkFreshStart(incoming) {
+    var v = contentVersion();
+    if (!v || !freshContent() || !hasOldProgress(v, incoming)) return;
+    newsShownFor = 0;
+    try {
+      if (global.localStorage) {
+        global.localStorage.removeItem(FRESH_CONTENT_KEY);
+        global.localStorage.removeItem(SEEN_CONTENT_KEY);
+      }
+    } catch (e) { /* storage may be blocked */ }
+  }
+  // a child who played the older content (and did not start fresh with this version on this device)
+  function returningFor(v) { return hasOldProgress(v) && freshContent() < v; }
+  function verOf(x) { var v = x ? Number(x.v) : 0; return isFinite(v) ? v : 0; }
+  // what content version v added: its lesson groups, its puzzle sets, its puzzles appended to the older sets
+  function contentNews(v) {
+    var L = global.Lessons || {};
+    var groups = (Array.isArray(L.GROUPS) ? L.GROUPS : []).filter(function (g) { return g && verOf(g) >= v; });
+    var sets = puzzleSets().filter(function (s) { return verOf(s) >= v; });
+    var added = 0;
+    puzzleSets().forEach(function (s) {
+      if (verOf(s) >= v || s.endless) return;
+      s.puzzles.forEach(function (pz) { if (pz && verOf(pz) >= v) added++; });
+    });
+    return { groups: groups, sets: sets, added: added };
+  }
+  // any star in a lesson or puzzle that is older than version v (of this profile, or of another one, e.g. a code's)
+  function hasOldProgress(v, prof) {
+    var L = global.Lessons || {}, p = prof || App.profile;
+    var newGroup = {};
+    (Array.isArray(L.GROUPS) ? L.GROUPS : []).forEach(function (g) { if (g && verOf(g) >= v) newGroup[String(g.id)] = true; });
+    var lessons = p.lessons || {};
+    if (Object.keys(lessons).some(function (k) { return nonNeg(lessons[k], 0) > 0 && !newGroup[k.split(':')[0]]; })) return true;
+    var newPuzzle = {};
+    puzzleSets().forEach(function (s) {
+      s.puzzles.forEach(function (pz) { if (pz && (verOf(s) >= v || verOf(pz) >= v)) newPuzzle[String(pz.id)] = true; });
+    });
+    var puzzles = p.puzzles || {};
+    return Object.keys(puzzles).some(function (k) { return nonNeg(puzzles[k], 0) > 0 && !newPuzzle[k]; });
+  }
+  // «Новое!» stickers on the home tiles while a new lesson / puzzle set of this content version is still untouched
+  // (only for a child who already played the older content, like the map and the puzzle picker)
+  function tileNewsFlags() {
+    var v = contentVersion(), out = { lessons: false, puzzles: false };
+    if (!v || !returningFor(v)) return out;
+    var L = global.Lessons || {}, lp = App.profile.lessons || {}, pp = App.profile.puzzles || {};
+    out.lessons = (Array.isArray(L.GROUPS) ? L.GROUPS : []).some(function (g) {
+      return g && verOf(g) >= v && Array.isArray(g.levels) && g.levels.length > 0 &&
+        !g.levels.some(function (_, i) { return nonNeg(lp[g.id + ':' + i], 0) > 0; });
+    });
+    out.puzzles = puzzleSets().some(function (s) {
+      var list = verOf(s) >= v ? s.puzzles : (s.endless ? [] : s.puzzles.filter(function (pz) { return pz && verOf(pz) >= v; }));
+      return list.length > 0 && !list.some(function (pz) { return pz && nonNeg(pp[String(pz.id)], 0) > 0; });
+    });
+    return out;
+  }
+  function renderTileNews() {
+    var f = tileNewsFlags();
+    [['.tile-learn', f.lessons], ['.tile-puzzles', f.puzzles]].forEach(function (x) {
+      var tile = $(x[0]);
+      if (!tile) return;
+      var st = tile.querySelector('.tile-new');
+      if (x[1] && !st) {
+        st = h('span', 'tile-new', 'Новое!');
+        st.setAttribute('aria-hidden', 'true');
+        tile.appendChild(st);
+      } else if (!x[1] && st) st.parentNode.removeChild(st);
+    });
+  }
+  function joinAnd(items) {
+    if (items.length < 2) return items.join('');
+    return items.slice(0, -1).join(', ') + ' и ' + items[items.length - 1];
+  }
+  // called after boot and whenever the home screen is shown: shows the news once, at a calm moment on the home screen
+  function maybeShowNews() {
+    var v = contentVersion();
+    if (!v || newsShownFor >= v || seenContent() >= v) return;
+    var news = contentNews(v);
+    if (!news.groups.length && !news.sets.length && !news.added) return;   // the new files did not load: next time
+    if (!returningFor(v)) { markContentSeen(v); return; }                  // a new player: everything is new anyway
+    if (currentScreen !== 'home' || modalStack.length || achQueue.length || achBusy) {
+      clearTimeout(newsTimer);
+      newsTimer = setTimeout(function () { if (currentScreen === 'home') maybeShowNews(); }, 2500);
+      return;
+    }
+    markContentSeen(v);
+    showNewsModal(news);
+  }
+  function showNewsModal(news) {
+    var name = childName();
+    var items = [], said = [];
+    if (news.groups.length) {
+      var ng = news.groups.length;
+      items.push({ emoji: '🎓', title: ng + ' ' + plural(ng, 'новый урок', 'новых урока', 'новых уроков'),
+        text: news.groups.map(function (g) { return '«' + g.title + '»'; }).join(', ') });
+      said.push(plural(ng, 'новый урок', 'новые уроки', 'новые уроки'));
+    }
+    news.sets.forEach(function (st) {
+      var n = st.puzzles.length;
+      items.push({ emoji: st.emoji || '🧩', title: '«' + st.title + '»',
+        text: st.endless ? (st.text || 'Задачки без конца!') : n + ' ' + plural(n, 'задачка', 'задачки', 'задачек') });
+      said.push(st.endless ? 'тренажёр' : '«' + st.title + '»');
+    });
+    if (news.added) {
+      items.push({ emoji: '🧩', title: '+' + news.added + ' ' + plural(news.added, 'задачка', 'задачки', 'задачек') + ' в старых наборах',
+        text: 'Ищи их по наклейке «Новое!»' });
+      said.push('новые задачки в старых наборах');
+    }
+    var line = 'Смотри, ' + name + ', сколько нового: ' + joinAnd(said) + '. С чего начнём?';
+    var html = '<div class="news-hero"><div class="news-mascot">' + art.mascot() + '</div>' +
+      '<p class="news-say">' + esc(line) + '</p></div>' +
+      '<ul class="news-list">' + items.map(function (it, i) {
+        return '<li class="news-item" style="--i:' + i + '"><span class="news-ico" aria-hidden="true">' + esc(it.emoji) + '</span>' +
+          '<span class="news-text"><b>' + esc(it.title) + '</b><small>' + esc(it.text) + '</small></span></li>';
+      }).join('') + '</ul>';
+    var buttons = [];
+    if (news.sets.length || news.added) buttons.push({ label: '🧩 К задачкам', kind: 'green', big: true, onClick: function () { openLearn('puzzles'); } });
+    if (news.groups.length) buttons.push({ label: '🎓 К урокам', kind: 'secondary', big: true, onClick: function () { openLearn('lessons'); } });
+    buttons.push({ label: 'Потом', kind: 'ghost' });
+    modal({ className: 'modal-news', emoji: '🎁', title: 'Новое в Королевстве!', html: html, buttons: buttons });
+    snd('achievement');
+    fx.confetti({ count: 110 });
+    speak(line, { interrupt: true });
+    if (homeMascot) homeMascot.say('Смотри, сколько нового! Выбирай, с чего начнём!', { mood: 'wow', speak: false });
+  }
+
+  // =================================================================================================
   // First launch
   // =================================================================================================
   function showWelcome() {
@@ -3167,6 +3351,7 @@
       App.profile.name = name;
       App.profile.welcomed = true;
       App.save();
+      markFreshStart();
       hnd.close();
       renderHome();
       lastGreetAt = Date.now();
@@ -3194,7 +3379,7 @@
           '<button type="button" class="btn btn-ghost" id="welcome-code">📥 У меня есть код прогресса</button></div>' : ''),
       buttons: [
         { label: 'Поехали! 🚀', kind: 'primary', big: true, keepOpen: true, onClick: function (hd) { go(hd); } },
-        { label: 'Пропустить', kind: 'ghost', onClick: function () { App.profile.welcomed = true; App.save(); } }
+        { label: 'Пропустить', kind: 'ghost', onClick: function () { App.profile.welcomed = true; App.save(); markFreshStart(); } }
       ]
     });
     var codeBtn = hnd.el.querySelector('#welcome-code');
@@ -3314,8 +3499,12 @@
     if (global.CloudSync && typeof global.CloudSync.init === 'function') {
       try { global.CloudSync.init({ getProfile: function () { return App.profile; }, apply: applyCloudProfile }); }
       catch (e) { logErr('CloudSync.init', e); }
-      global.CloudSync.whenSettled(3000).then(function () { if (needsWelcome()) setTimeout(showWelcome, 250); });
+      global.CloudSync.whenSettled(3000).then(function () {
+        if (needsWelcome()) setTimeout(showWelcome, 250);
+        else setTimeout(maybeShowNews, 700);
+      });
     } else if (needsWelcome()) setTimeout(showWelcome, 650);
+    else setTimeout(maybeShowNews, 900);
   }
 
   // js/pwa.js applies a downloaded update (one reload) only at such a moment: a menu screen, no dialog, no toast or

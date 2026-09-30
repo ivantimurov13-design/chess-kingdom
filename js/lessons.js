@@ -14,13 +14,25 @@
  *   Lessons.solveStars(level, state?) -> { par, path:[{from,to,promotion}] } | null
  *   Lessons.checkGoal(level, chessBefore, move, chessAfter) -> boolean
  *   Lessons.rateStars(moves, par) -> 1..3
- *   Lessons.puzzleKind(puzzleOrId) -> 'mate1' | 'mate2' | 'win';  Lessons.allPuzzles() -> every puzzle of every set
- *   Lessons.puzzleById(id) -> puzzle | null
+ *   Lessons.puzzleKind(puzzleOrId) -> p.kind || 'mate1'  ('mate1'|'mate2'|'mate3'|'win'|'save'|'endgame')
+ *   Lessons.allPuzzles() -> every puzzle of every set (appended sets included)
+ *   Lessons.puzzleById(id) -> puzzle | null;   Lessons.puzzleSet(setId) -> set | null
  *   Lessons.isMate2Move(chessBefore, move) -> boolean;  Lessons.bestDefense(chessAfterWhiteMove) -> Move | null
  *   Lessons.hangingLegal(chess, color) -> [{sq, piece, loss}]   like Chess#hangingPieces, legal captures only
  *
+ * v3 core (SPEC §11.1) — the content itself lives in separate files that register at load time:
+ *   Lessons.CONTENT_VERSION = 3
+ *   Lessons.addGroups(groups)             append lesson groups (GROUPS is mutated in place); duplicate id → throws
+ *   Lessons.addPuzzles(setId, puzzles)    append puzzles to an existing set; ids unique across ALL sets → else throws
+ *   Lessons.addPuzzleSet(set)             append {id,title,emoji,color,text,puzzles,endless?}; duplicate id → throws
+ *   Lessons.isMateInMove(chessBefore, move, n) -> boolean   mate now, or every reply leaves a forced mate in n−1
+ *   Lessons.mateInN(chess, n) -> Move[]   moves of the side to move forcing mate in ≤ n (each with .mateIn, .san)
+ *   Lessons.bestDefenseN(chessAfter, n) -> Move | null   the reply leaving the fewest forcing continuations
+ *   Lessons.endgameReply(chess) -> Move | null           strong deterministic defence (ChessAI) for 'endgame' play
+ *   checkGoal goal 'solution'             the move is one of level.solutions (UCI 'e2e4', 'e7e8q')
+ *
  * Saved progress refers to groups by 'groupId:levelIndex' and to puzzles by id: existing entries are frozen
- * (tests/fixtures/content-v1.json), new content is only appended.
+ * (tests/fixtures/content-v1.json and content-v2.json), new content is only appended.
  *
  * Square names in the content ('a1', 'e4') are human-written; solveStars returns 0x88 square numbers
  * (like engine moves) and the promotion as a type number (0 when there is none).
@@ -46,6 +58,23 @@
     return requiredChess;
   }
 
+  var requiredAI = null;
+
+  /* ChessAI: the global one (browser / worker) or require('./ai.js') under node; null when unavailable */
+  function getAI() {
+    if (global && global.ChessAI && typeof global.ChessAI.chooseMove === 'function') return global.ChessAI;
+    if (requiredAI) return requiredAI;
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+      try {
+        requiredAI = require('./ai.js');
+      } catch (e) {
+        requiredAI = null;
+      }
+    }
+    return requiredAI && typeof requiredAI.chooseMove === 'function' ? requiredAI : null;
+  }
+
+  var CONTENT_VERSION = 3;
   var WHITE = 8, BLACK = 16;
   var PAWN = 1, ROOK = 4, QUEEN = 5, KING = 6;
   var F_EP = 2, F_CASTLE = 4, F_PROMO = 16;
@@ -1115,38 +1144,182 @@
         return hangingLegal(after, us).length === 0;
       case 'fork':
         return isFork(after, m.to, us);
+      case 'solution': {
+        var sols = Array.isArray(level.solutions) ? level.solutions : (level.hint ? [level.hint] : []);
+        for (var si = 0; si < sols.length; si++) if (solutionMatches(sols[si], m)) return true;
+        return false;
+      }
       default:
         return false;
     }
   }
 
+  /* 'e2e4' for an engine move (promotion letter included: 'e7e8q') */
+  function uciOf(m) {
+    var s = sqName(m.from) + sqName(m.to);
+    return (m.flags & F_PROMO) ? s + TYPE_CHARS.charAt(m.promotion & 7) : s;
+  }
+
+  function sqName(sq) {
+    return 'abcdefgh'.charAt(sq & 7) + (8 - (sq >> 4));
+  }
+
+  /*
+   * Does the engine move m match a listed solution? A solution is a UCI string ('e2e4', 'e7e8q', any case) or
+   * {from, to, promotion}. A promotion must name the same piece (a solution without a letter means the queen,
+   * like Chess#move); a solution with a letter never matches a move that does not promote.
+   */
+  function solutionMatches(sol, m) {
+    var from, to, promo;
+    if (typeof sol === 'string') {
+      var s = sol.trim().toLowerCase();
+      if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(s)) return false;
+      from = sqFromName(s.slice(0, 2));
+      to = sqFromName(s.slice(2, 4));
+      promo = s.length > 4 ? toType(s.charAt(4)) : 0;
+    } else if (sol && typeof sol === 'object') {
+      from = toSq(sol.from);
+      to = toSq(sol.to);
+      promo = toType(sol.promotion);
+    } else {
+      return false;
+    }
+    if (from < 0 || from !== m.from || to !== m.to) return false;
+    if (m.flags & F_PROMO) return (promo || QUEEN) === (m.promotion & 7);
+    return !promo;
+  }
+
   /* ================================================================ puzzle sets */
 
-  /* 'mate1' | 'mate2' | 'win' for a puzzle object (or a puzzle id) */
-  function puzzleKind(p) {
-    if (p && typeof p === 'object') {
-      if (p.kind === 'mate1' || p.kind === 'mate2' || p.kind === 'win') return p.kind;
-      p = p.id;
-    }
-    var s = String(p);
-    if (/^m2-/.test(s)) return 'mate2';
-    if (/^w-/.test(s)) return 'win';
+  /* id prefixes of the sets (used only when a puzzle object has no kind, or for an id that is not registered) */
+  var KIND_PREFIXES = [[/^m2-/, 'mate2'], [/^m3-/, 'mate3'], [/^w-/, 'win'], [/^s-/, 'save'], [/^e-/, 'endgame']];
+
+  function kindFromId(id) {
+    var s = String(id);
+    for (var i = 0; i < KIND_PREFIXES.length; i++) if (KIND_PREFIXES[i][0].test(s)) return KIND_PREFIXES[i][1];
     return 'mate1';
   }
 
-  /* every puzzle of every set, in set order (for totals) */
+  /*
+   * The kind of a puzzle: p.kind || 'mate1' ('mate1'|'mate2'|'mate3'|'win'|'save'|'endgame').
+   * Also takes a puzzle id (number or string): the registered puzzle's kind, else a guess by the id prefix.
+   */
+  function puzzleKind(p) {
+    if (p && typeof p === 'object') {
+      if (typeof p.kind === 'string' && p.kind) return p.kind;
+      return p.id === undefined || p.id === null ? 'mate1' : kindFromId(p.id);
+    }
+    var found = puzzleById(p);
+    if (found) return typeof found.kind === 'string' && found.kind ? found.kind : kindFromId(found.id);
+    return kindFromId(p);
+  }
+
+  /* every puzzle of every set, in set order (for totals); sets added with addPuzzleSet included */
   function allPuzzles() {
     var out = [];
-    PUZZLE_SETS.forEach(function (set) { out = out.concat(set.puzzles); });
+    PUZZLE_SETS.forEach(function (set) { out = out.concat(set.puzzles || []); });
     return out;
   }
 
   /* the puzzle with this id (number or string, as stored in profile.puzzles keys) or null */
   function puzzleById(id) {
     var key = String(id);
-    var list = allPuzzles();
-    for (var i = 0; i < list.length; i++) if (String(list[i].id) === key) return list[i];
+    for (var s = 0; s < PUZZLE_SETS.length; s++) {
+      var list = PUZZLE_SETS[s].puzzles || [];
+      for (var i = 0; i < list.length; i++) if (String(list[i].id) === key) return list[i];
+    }
     return null;
+  }
+
+  /* the puzzle set with this id or null */
+  function puzzleSet(setId) {
+    var key = String(setId);
+    for (var i = 0; i < PUZZLE_SETS.length; i++) if (String(PUZZLE_SETS[i].id) === key) return PUZZLE_SETS[i];
+    return null;
+  }
+
+  /* ================================================================ registration of new content (v3) */
+  /*
+   * New content lives in its own files and is appended here at load time. GROUPS, PUZZLE_SETS and every set's
+   * puzzles array are mutated in place, so everyone holding Lessons.GROUPS / Lessons.PUZZLES / … sees it.
+   * Nothing that exists is ever replaced or reordered (saved progress refers to it by position and id).
+   * Each call validates the whole batch first: on an error it throws and adds nothing.
+   */
+
+  function listOf(v, what) {
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === 'object') return [v];
+    throw new TypeError('Lessons.' + what + ': expected an array of objects');
+  }
+
+  /* profile key (String(id)) → set id, for every registered puzzle */
+  function puzzleIdsInUse() {
+    var used = {};
+    PUZZLE_SETS.forEach(function (set) {
+      (set.puzzles || []).forEach(function (p) {
+        if (p && p.id !== undefined && p.id !== null) used[String(p.id)] = String(set.id);
+      });
+    });
+    return used;
+  }
+
+  function checkNewPuzzles(list, used, where) {
+    var seen = {};
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (!p || typeof p !== 'object') throw new TypeError(where + ': puzzle #' + i + ' is not an object');
+      if (p.id === undefined || p.id === null || String(p.id) === '') {
+        throw new TypeError(where + ': puzzle #' + i + ' has no id');
+      }
+      var key = String(p.id);
+      if (Object.prototype.hasOwnProperty.call(used, key)) {
+        throw new Error(where + ': duplicate puzzle id "' + key + '" (already in set "' + used[key] + '")');
+      }
+      if (seen[key]) throw new Error(where + ': duplicate puzzle id "' + key + '" in the same batch');
+      seen[key] = true;
+    }
+  }
+
+  /* append lesson groups after the existing ones; returns the added groups */
+  function addGroups(groups) {
+    var list = listOf(groups, 'addGroups');
+    var ids = {};
+    GROUPS.forEach(function (g) { ids[g.id] = true; });
+    for (var i = 0; i < list.length; i++) {
+      var g = list[i];
+      if (!g || typeof g !== 'object') throw new TypeError('Lessons.addGroups: group #' + i + ' is not an object');
+      if (typeof g.id !== 'string' || !g.id) throw new TypeError('Lessons.addGroups: group #' + i + ' has no id');
+      if (!Array.isArray(g.levels)) throw new TypeError('Lessons.addGroups: group "' + g.id + '" has no levels array');
+      if (Object.prototype.hasOwnProperty.call(ids, g.id)) {
+        throw new Error('Lessons.addGroups: duplicate group id "' + g.id + '"');
+      }
+      ids[g.id] = true;
+    }
+    for (var j = 0; j < list.length; j++) GROUPS.push(list[j]);
+    return list.slice();
+  }
+
+  /* append puzzles to an existing set (e.g. 'mate1' → Lessons.PUZZLES); returns the set */
+  function addPuzzles(setId, puzzles) {
+    var set = puzzleSet(setId);
+    if (!set) throw new Error('Lessons.addPuzzles: unknown puzzle set "' + setId + '"');
+    var list = listOf(puzzles, 'addPuzzles');
+    if (!Array.isArray(set.puzzles)) set.puzzles = [];
+    checkNewPuzzles(list, puzzleIdsInUse(), 'Lessons.addPuzzles(' + set.id + ')');
+    for (var i = 0; i < list.length; i++) set.puzzles.push(list[i]);
+    return set;
+  }
+
+  /* append a new puzzle set {id, title, emoji, color, text, puzzles, endless?}; returns the set */
+  function addPuzzleSet(set) {
+    if (!set || typeof set !== 'object' || Array.isArray(set)) throw new TypeError('Lessons.addPuzzleSet: expected a set object');
+    if (typeof set.id !== 'string' || !set.id) throw new TypeError('Lessons.addPuzzleSet: the set has no id');
+    if (puzzleSet(set.id)) throw new Error('Lessons.addPuzzleSet: duplicate set id "' + set.id + '"');
+    if (set.puzzles === undefined || set.puzzles === null) set.puzzles = [];
+    if (!Array.isArray(set.puzzles)) throw new TypeError('Lessons.addPuzzleSet: puzzles of "' + set.id + '" must be an array');
+    checkNewPuzzles(set.puzzles, puzzleIdsInUse(), 'Lessons.addPuzzleSet(' + set.id + ')');
+    PUZZLE_SETS.push(set);
+    return set;
   }
 
   /*
@@ -1199,6 +1372,310 @@
     return best;
   }
 
+  /* ================================================================ mate in N (v3) */
+  /*
+   * "Mate in ≤ k" is decided by a small exact search over make/unmake (no evaluation, no depth limit other than
+   * k): the attacker tries checks first (a mate in 1 can only be a check), then captures, then quiet moves; the
+   * defender tries the reply that refuted a sibling first (killer), then captures, then the rest, and stops at the
+   * first reply that escapes. Results are cached per position (Zobrist hash) as "mates in ≤ t" / "not in ≤ f",
+   * which is exact because "mate in ≤ k" only grows with k. Repetition and the fifty-move rule are ignored (as in
+   * isMate2Move). The searched position is always restored.
+   */
+  var MAX_MATE_N = 5;
+
+  function mateDepth(n, dflt) {
+    var k = Math.floor(Number(n));
+    if (!isFinite(k)) k = dflt;
+    return k < 1 ? 1 : (k > MAX_MATE_N ? MAX_MATE_N : k);
+  }
+
+  function hasLegalMove(c) {
+    return typeof c._hasLegal === 'function' ? c._hasLegal() : c.moves().length > 0;
+  }
+
+  function moveCode(m) {
+    return ((m.from * 128 + m.to) * 8) + (m.promotion & 7);
+  }
+
+  function MateSearch(c) {
+    this.c = c;
+    this.tt = typeof Map === 'function' ? new Map() : null;
+    this.ttObj = this.tt ? null : {};
+    this.killer = [];
+    this.nodes = 0;
+  }
+
+  MateSearch.prototype.ttGet = function (key) {
+    return this.tt ? this.tt.get(key) : this.ttObj[key];
+  };
+
+  MateSearch.prototype.ttPut = function (key, k, res) {
+    var e = this.ttGet(key);
+    if (!e) {
+      e = { t: Infinity, f: 0 };
+      if (this.tt) this.tt.set(key, e); else this.ttObj[key] = e;
+    }
+    if (res) { if (k < e.t) e.t = k; } else if (k > e.f) e.f = k;
+  };
+
+  /* legal moves of the side to move, without .san */
+  MateSearch.prototype.legal = function () {
+    var c = this.c, us = c.turn, list = c.genMoves(false), out = [];
+    for (var i = 0; i < list.length; i++) {
+      c.make(list[i]);
+      if (!c.inCheck(us)) out.push(list[i]);
+      c.unmake();
+    }
+    return out;
+  };
+
+  /* side to move (the attacker) can force mate in ≤ k of its own moves */
+  MateSearch.prototype.canMate = function (k) {
+    var c = this.c;
+    var key = c.hashLo + ':' + c.hashHi;
+    var e = this.ttGet(key);
+    if (e) {
+      if (e.t <= k) return true;
+      if (e.f >= k) return false;
+    }
+    var res = this.searchMate(k);
+    this.ttPut(key, k, res);
+    return res;
+  };
+
+  MateSearch.prototype.searchMate = function (k) {
+    var c = this.c, us = c.turn, them = us ^ 24;
+    var list = c.genMoves(false);
+    var checks = [], caps = [], quiet = [];
+    var i, m;
+    this.nodes++;
+    for (i = 0; i < list.length; i++) {
+      m = list[i];
+      c.make(m);
+      if (!c.inCheck(us)) {
+        if (c.inCheck(them)) {
+          if (!hasLegalMove(c)) { c.unmake(); return true; }      // mate at once
+          if (k > 1) checks.push(m);
+        } else if (k > 1) {
+          if (m.captured || (m.flags & F_PROMO)) caps.push(m); else quiet.push(m);
+        }
+      }
+      c.unmake();
+    }
+    if (k <= 1) return false;
+    caps.sort(function (a, b) { return pieceValue(b.captured & 7) - pieceValue(a.captured & 7); });
+    var order = checks.concat(caps, quiet);
+    for (i = 0; i < order.length; i++) {
+      c.make(order[i]);
+      var ok = this.forces(k);
+      c.unmake();
+      if (ok) return true;
+    }
+    return false;
+  };
+
+  /*
+   * The attacker has just moved (defender to move): is it mate, or does every reply leave the attacker a
+   * forced mate in ≤ k − 1? No legal reply without check = stalemate = false.
+   */
+  MateSearch.prototype.forces = function (k) {
+    var c = this.c, us = c.turn;
+    if (k <= 1) return c.inCheck(us) && !hasLegalMove(c);
+    var list = c.genMoves(false);
+    var kill = this.killer[k];
+    var first = [], caps = [], rest = [];
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (kill !== undefined && moveCode(m) === kill) first.push(m);
+      else if (m.captured) caps.push(m);
+      else rest.push(m);
+    }
+    caps.sort(function (a, b) { return pieceValue(b.captured & 7) - pieceValue(a.captured & 7); });
+    var order = first.concat(caps, rest);
+    var legal = 0;
+    for (var j = 0; j < order.length; j++) {
+      var r = order[j];
+      c.make(r);
+      if (c.inCheck(us)) { c.unmake(); continue; }
+      legal++;
+      var ok = this.canMate(k - 1);
+      c.unmake();
+      if (!ok) {
+        this.killer[k] = moveCode(r);
+        return false;
+      }
+    }
+    return legal > 0 || c.inCheck(us);
+  };
+
+  /* moves of the side to move forcing mate in ≤ k, each with .mateIn (the fastest forced mate, 1..k) */
+  MateSearch.prototype.rootMates = function (k) {
+    var c = this.c, out = [];
+    if (k < 1) return out;
+    var list = this.legal();
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      c.make(m);
+      var best = 0;
+      for (var j = 1; j <= k && !best; j++) if (this.forces(j)) best = j;
+      c.unmake();
+      if (best) {
+        m.mateIn = best;
+        out.push(m);
+      }
+    }
+    return out;
+  };
+
+  function sanOf(c, m) {
+    if (typeof c.san === 'function') {
+      try { m.san = c.san(m); } catch (e) { /* SAN is only a nicety */ }
+    }
+    return m;
+  }
+
+  /*
+   * Mate in n: is `move` (made by the side to move in chessBefore) correct? True when it mates at once, or when
+   * (n > 1) EVERY legal reply leaves a move that is again isMateInMove(…, n − 1). A stalemating or illegal move
+   * is wrong. n = 2 is exactly isMate2Move. chessBefore is not changed. n is clamped to 1..5 (fast for n ≤ 3).
+   */
+  function isMateInMove(chessBefore, move, n) {
+    if (!chessBefore || !move || typeof chessBefore.clone !== 'function') return false;
+    var m = resolveMove(chessBefore, move);
+    if (!m) return false;
+    var c = chessBefore.clone();
+    c.make(m);
+    return new MateSearch(c).forces(mateDepth(n, 1));
+  }
+
+  /*
+   * The legal moves of the side to move that force mate in ≤ n (n clamped to 1..5, fast for n ≤ 3 on small
+   * boards), in the engine's move order. Each Move has .san and .mateIn = the fastest forced mate (1..n) — a hint
+   * should prefer the smallest. chess is not changed.
+   */
+  function mateInN(chess, n) {
+    if (!chess || typeof chess.clone !== 'function') return [];
+    var c = chess.clone();
+    var out = new MateSearch(c).rootMates(mateDepth(n, 1));
+    for (var i = 0; i < out.length; i++) sanOf(c, out[i]);
+    return out;
+  }
+
+  /*
+   * Black's answer in a mate-in-n puzzle (chessAfter = after White's move, n = White moves left including the one
+   * just made): the legal reply that leaves White the fewest moves forcing mate in ≤ n − 1 (a reply leaving none
+   * refutes a wrong move). Ties: the reply after which White's fastest mate is longest, then the bigger capture,
+   * then the lowest from / to / promotion — deterministic. n = 2 (the default) behaves exactly like bestDefense.
+   * Returns the engine Move (with .san) or null when there is no legal reply. chessAfter is not changed.
+   */
+  function bestDefenseN(chessAfter, n) {
+    if (!chessAfter || typeof chessAfter.moves !== 'function') return null;
+    var k = mateDepth(n, 2) - 1;
+    var a = chessAfter.clone();
+    var S = new MateSearch(a);
+    var replies = a.moves();
+    var best = null, bestKey = null;
+    for (var i = 0; i < replies.length; i++) {
+      var r = replies[i];
+      a.make(r);
+      var sols = S.rootMates(k);
+      a.unmake();
+      var fastest = Infinity;
+      for (var j = 0; j < sols.length; j++) if (sols[j].mateIn < fastest) fastest = sols[j].mateIn;
+      var key = [sols.length, -fastest, -(r.captured ? pieceValue(r.captured & 7) : 0), r.from, r.to, r.promotion | 0];
+      var better = !bestKey;
+      for (var q = 0; !better && q < key.length; q++) {
+        if (key[q] !== bestKey[q]) { better = key[q] < bestKey[q]; break; }
+      }
+      if (better) { best = r; bestKey = key; }
+    }
+    return best ? sanOf(a, best) : null;
+  }
+
+  /* ================================================================ endgame defence (v3) */
+
+  var ENDGAME_WIN = 1000000;       // the defender mates (practically never happens in these endgames)
+
+  function materialOf(c, color) {
+    if (typeof c.material === 'function') return c.material(color);
+    var s = 0;
+    for (var sq = 0; sq < 128; sq++) {
+      if (sq & 0x88) { sq += 7; continue; }
+      var p = c.get(sq);
+      if (p && (p & 24) === color) s += pieceValue(p & 7);
+    }
+    return s;
+  }
+
+  /* fixed-depth ChessAI config for the attacker's answer to every defender move: together with the defender's own
+     move this is the 'hint' depth (a timed search would not be deterministic); one ply more with very few pieces */
+  function endgameCfg(ai, c) {
+    var hint = ai.LEVELS && ai.LEVELS.hint ? ai.LEVELS.hint : { depth: 4 };
+    var d = Math.max(2, (hint.depth | 0 || 4) - 1);
+    var pieces = typeof c.pieceCount === 'function' ? c.pieceCount() : 32;
+    if (pieces <= 4) d++;
+    return { depth: d, noise: 0 };
+  }
+
+  /* without ChessAI: avoid a mate in one, keep material, keep the king central */
+  function fallbackEndgameScore(c, us) {
+    var them = us ^ 24;
+    if (c.mateInOne().length) return -ENDGAME_WIN / 2;
+    var loss = 0;
+    hangingLegal(c, us).forEach(function (h) { if (h.loss > loss) loss = h.loss; });
+    var k = c.kings ? c.kings[us] : -1;
+    var centre = k >= 0 ? Math.abs((k & 7) - 3.5) + Math.abs((k >> 4) - 3.5) : 0;
+    return materialOf(c, us) - materialOf(c, them) - loss - centre * 10;
+  }
+
+  /*
+   * The defender's move in 'endgame' practice (the side to move in chess, normally Black with a lone king):
+   * every legal move is scored by a fixed-depth ChessAI search of the attacker's best answer (hint strength), so
+   * it avoids mate as long as it can (a mate in one is never walked into when avoidable), grabs pieces left
+   * hanging, and takes a stalemate or a dead draw when offered. Ties: more own material left, then the lowest
+   * from / to / promotion — the same position always gets the same move. chess is not changed; ChessAI.lastSearch
+   * is restored. Returns the engine Move (with .san) or null when there is no legal move.
+   */
+  function endgameReply(chess) {
+    if (!chess || typeof chess.clone !== 'function' || typeof chess.moves !== 'function') return null;
+    var a = chess.clone();
+    var list = a.moves();
+    if (!list.length) return null;
+    var us = a.turn, them = us ^ 24;
+    var ai = getAI();
+    var saved = ai ? ai.lastSearch : null;
+    var cfg = ai ? endgameCfg(ai, a) : null;
+    var best = null, bestKey = null;
+    try {
+      for (var i = 0; i < list.length; i++) {
+        var m = list[i];
+        a.make(m);
+        var score;
+        if (!hasLegalMove(a)) {
+          score = a.inCheck(them) ? ENDGAME_WIN : 0;          // we mate / stalemate (a draw)
+        } else if (typeof a.isInsufficientMaterial === 'function' && a.isInsufficientMaterial()) {
+          score = 0;                                           // e.g. the last pawn taken: a dead draw
+        } else if (ai) {
+          var r = ai.chooseMove(a, cfg);
+          score = r ? -r.score : 0;
+        } else {
+          score = fallbackEndgameScore(a, us);
+        }
+        var mat = materialOf(a, us) - materialOf(a, them);
+        a.unmake();
+        var key = [-score, -mat, m.from, m.to, m.promotion | 0];
+        var better = !bestKey;
+        for (var q = 0; !better && q < key.length; q++) {
+          if (key[q] !== bestKey[q]) { better = key[q] < bestKey[q]; break; }
+        }
+        if (better) { best = m; bestKey = key; }
+      }
+    } finally {
+      if (ai) ai.lastSearch = saved;
+    }
+    return best ? sanOf(a, best) : null;
+  }
+
   /* ================================================================ rating */
 
   /* 3 stars if moves ≤ par, 2 if ≤ par + 2, else 1 (3 when par is unknown) */
@@ -1230,7 +1707,17 @@
     puzzleById: puzzleById,
     isMate2Move: isMate2Move,
     bestDefense: bestDefense,
-    hangingLegal: hangingLegal
+    hangingLegal: hangingLegal,
+    /* v3 core (SPEC §11.1) */
+    CONTENT_VERSION: CONTENT_VERSION,
+    addGroups: addGroups,
+    addPuzzles: addPuzzles,
+    addPuzzleSet: addPuzzleSet,
+    puzzleSet: puzzleSet,
+    isMateInMove: isMateInMove,
+    mateInN: mateInN,
+    bestDefenseN: bestDefenseN,
+    endgameReply: endgameReply
   };
 
   global.Lessons = Lessons;

@@ -3,18 +3,22 @@
  * The learning part: lessons map, lesson play (stars / task / info levels), puzzles grid and puzzle play.
  *
  * Global: Learn
- *   Learn.openLessons()              — lessons map (#screen-lessons)
- *   Learn.openPuzzles(setId?)        — puzzles screen (#screen-puzzles): set tabs + the grid of one set
+ *   Learn.openLessons()              — lessons map (#screen-lessons): the road through the chapters of the kingdom
+ *   Learn.openPuzzles(setId?)        — puzzles screen (#screen-puzzles): the set picker (big cards), or the grid of
+ *                                      one set when setId is given
  *   Learn.openLesson(group, level?)  — a lesson level (#screen-lesson); group = id or index
  *   Learn.openPuzzle(index, setId?)  — a puzzle (#screen-puzzle); 0-based index inside the set (default: the
- *                                      «Мат в 1 ход» set = Lessons.PUZZLES); index may also be a puzzle id ('m2-3')
+ *                                      «Мат в 1 ход» set = Lessons.PUZZLES); index may also be a puzzle id ('m2-3');
+ *                                      setId 'trainer' (an endless set) opens the trainer
  *   Learn.leave()                    — stop timers / voice / boards (called by App before leaving a learn screen)
  *
- * Uses (SPEC): Chess, Lessons, PieceArt, Sound, Voice, FX, BoardView (via App.createBoard), App.
+ * Uses (SPEC): Chess, ChessAI, Lessons, PieceArt, Sound, Voice, FX, BoardView (via App.createBoard), App.
  * Every call into another module is feature-checked so a missing piece degrades gracefully
- * (content v2 — puzzle sets, mate in 2, «win a piece», 'safe' / 'fork' tasks — works with the v1 data too).
+ * (content v2 — puzzle sets, mate in 2, «win a piece», 'safe' / 'fork' tasks — works with the v1 data too;
+ * content v3 — mate in N, «Спасайся!», endgames, the endless trainer, 'solution' tasks — works without its files).
  * Progress keys never change: profile.lessons['<groupId>:<levelIndex>'], profile.puzzles[String(puzzleId)].
- * The last opened puzzle set is a per-device convenience: localStorage 'chessKingdom.v1.puzzleSet'.
+ * Per-device conveniences (localStorage): the last opened puzzle set 'chessKingdom.v1.puzzleSet', the trainer
+ * streak {streak, best} 'chessKingdom.v1.trainer'; read only: 'chessKingdom.v1.freshContent' (written by app.js).
  */
 (function (global) {
   'use strict';
@@ -45,19 +49,46 @@
   const VAL = [0, 100, 320, 330, 500, 900, 0];
 
   const SET_KEY = 'chessKingdom.v1.puzzleSet';
-  const KINDS = ['mate1', 'mate2', 'win'];
+  const TRAINER_KEY = 'chessKingdom.v1.trainer';
+  // written by app.js: the content version this device's profile started from scratch with (see veteran3)
+  const FRESH_KEY = 'chessKingdom.v1.freshContent';
+  const KINDS = ['mate1', 'mate2', 'mate3', 'win', 'save', 'endgame'];
+  const MATE_N = { mate1: 1, mate2: 2, mate3: 3 };
   const SET_DEFAULTS = {
     mate1: { title: 'Мат в 1 ход', emoji: '🏁', color: '#2ecc71', text: 'Поставь мат за один ход!' },
     mate2: { title: 'Мат в 2 хода', emoji: '🎯', color: '#6c63ff', text: 'Сначала хитрый ход, потом — мат!' },
-    win: { title: 'Выиграй фигуру', emoji: '⚔️', color: '#ff7a59', text: 'Найди ход, который выиграет фигуру соперника!' }
+    win: { title: 'Выиграй фигуру', emoji: '⚔️', color: '#ff7a59', text: 'Найди ход, который выиграет фигуру соперника!' },
+    mate3: { title: 'Мат в 3 хода', emoji: '🏆', color: '#ff6fae', text: 'Три хода — и король пойман!' },
+    save: { title: 'Спасайся!', emoji: '🛡️', color: '#3fa9f5', text: 'Соперник что-то задумал. Найди спасительный ход!' },
+    endgame: { title: 'Мат одинокому королю', emoji: '👑', color: '#ffb400', text: 'Играй до победы против одинокого короля!' },
+    trainer: { title: 'Тренажёр', emoji: '🔥', color: '#ff7a59', text: 'Задачки без конца! Сколько решишь подряд?' }
   };
-  const KIND_TASK = { mate1: 'Поставь мат в 1 ход!', mate2: 'Поставь мат в 2 хода!', win: 'Выиграй фигуру соперника!' };
+  const KIND_TASK = {
+    mate1: 'Поставь мат в 1 ход!', mate2: 'Поставь мат в 2 хода!', mate3: 'Поставь мат в 3 хода!',
+    win: 'Выиграй фигуру соперника!', save: 'Спасайся! Найди ход, который отобьёт угрозу.',
+    endgame: 'Поставь мат одинокому королю!'
+  };
   const KIND_INTRO = {
     mate1: 'В каждой задачке можно поставить мат за один ход.',
     mate2: 'Здесь мат ставится за два хода: сначала хитрый ход, соперник ответит — и мат!',
-    win: 'Здесь нужно найти ход, после которого соперник потеряет фигуру!'
+    mate3: 'Здесь мат ставится за три хода. Каждый твой ход должен загонять короля всё дальше!',
+    win: 'Здесь нужно найти ход, после которого соперник потеряет фигуру!',
+    save: 'Здесь соперник угрожает! Красная стрелка покажет, что он задумал. Найди ход, который спасёт твои фигуры.',
+    endgame: 'Здесь ты играешь с соперником до самой победы: поставь мат одинокому королю или проведи пешку в ферзи!'
   };
-  const KIND_MASTER = { mate1: 'Ты — настоящий мастер мата!', mate2: 'Ты — мастер двух ходов!', win: 'Ты — юный тактик!' };
+  const KIND_MASTER = {
+    mate1: 'Ты — настоящий мастер мата!', mate2: 'Ты — мастер двух ходов!', mate3: 'Ты — гроссмейстер мата!',
+    win: 'Ты — юный тактик!', save: 'Ты — супер-защитник!', endgame: 'Ты — мастер эндшпиля!'
+  };
+  // lesson map chapters (group ids of content v1/v2); groups of content v3 and unknown ones go to the last chapter
+  const CHAPTERS = [
+    { title: 'Знакомство с фигурами', emoji: '♟️', ids: ['rook', 'bishop', 'queen', 'king', 'knight', 'pawn'] },
+    { title: 'Правила игры', emoji: '📜', ids: ['values', 'check', 'escape', 'mate', 'castle', 'special'] },
+    { title: 'Первые хитрости', emoji: '🔱', ids: ['defend', 'fork', 'maze'] },
+    { title: 'Секреты чемпионов', emoji: '🏆', ids: [] }
+  ];
+  const TRAINER_WINDOW = 8;                  // a trainer puzzle is picked among the first unsolved ones (easy → hard)
+  const STREAK_PARTY = [5, 10, 20];          // small celebrations (then every 10 more)
   const FALLBACK_COLORS = ['#ff7a59', '#6c63ff', '#ff6fae', '#ffb400', '#2ecc71', '#3fa9f5'];
 
   const FALLBACK_NAMES = {
@@ -97,7 +128,8 @@
       fail: 'Ой, твою фигуру всё ещё могут съесть! Уведи её, защити или съешь того, кто нападает.',
       win: 'Молодец! Теперь твои фигуры в безопасности.'
     },
-    fork: { emoji: '🔱', label: 'Сделай вилку', fail: 'Найди клетку, откуда фигура нападёт сразу на две!', win: 'Вилка! Твоя фигура напала сразу на две!' }
+    fork: { emoji: '🔱', label: 'Сделай вилку', fail: 'Найди клетку, откуда фигура нападёт сразу на две!', win: 'Вилка! Твоя фигура напала сразу на две!' },
+    solution: { emoji: '💡', label: 'Найди лучший ход', fail: 'Так можно, но есть ход получше. Подумай ещё!', win: 'Отличный ход!' }
   };
 
   const DIFF = {
@@ -137,7 +169,9 @@
     lastPuzzle: null,    // { idx, set } of the last opened puzzle
     puzSet: null,        // id of the puzzle set shown on the puzzles screen (also kept in localStorage)
     greetedMap: false,
-    greetedPuzzles: false
+    greetedPuzzles: false,
+    trainer: null,       // { streak, best } (localStorage) + { queue, last } for this session
+    hintAI: null         // engine hints for endgames: { worker, seq, waiting }
   };
   const parCache = new Map();
   const lastTell = { text: '', t: 0 };
@@ -428,7 +462,9 @@
           emoji: String(s.emoji || d.emoji || '🧩'),
           color: s.color || d.color || FALLBACK_COLORS[i % FALLBACK_COLORS.length],
           text: String(s.text || d.text || ''),
-          puzzles: list
+          puzzles: list,
+          endless: !!s.endless,
+          v: num(s.v, 0)
         });
       });
     }
@@ -452,17 +488,27 @@
       sets[0] || null;
   }
 
-  /* 'mate1' | 'mate2' | 'win' */
+  /* 'mate1' | 'mate2' | 'mate3' | 'win' | 'save' | 'endgame' */
   function puzzleKind(pz, set) {
+    if (pz && KINDS.indexOf(pz.kind) >= 0) return pz.kind;
     const L = lessonsLib();
     if (L && typeof L.puzzleKind === 'function') {
       const k = safe(function () { return L.puzzleKind(pz); }, null);
-      if (KINDS.indexOf(k) >= 0) return k;
+      if (KINDS.indexOf(k) >= 0 && (k !== 'mate1' || !set || !(KINDS.indexOf(set.id) >= 0))) return k;
     }
-    if (pz && KINDS.indexOf(pz.kind) >= 0) return pz.kind;
-    if (pz && Array.isArray(pz.solutions)) return 'win';
     if (set && KINDS.indexOf(set.id) >= 0) return set.id;
+    if (pz && Array.isArray(pz.solutions)) return pz.threat ? 'save' : 'win';
     return 'mate1';
+  }
+
+  /* content v3 marks its groups, puzzles and sets with v: 3 */
+  function isV3(x) { return !!x && num(x.v, 0) >= 3; }
+
+  /* the sets that are not endless (the trainer re-uses mate-in-1 / «win» kinds: it must not count for their awards) */
+  function finiteSets() { return puzzleSets().filter(function (s) { return !s.endless; }); }
+
+  function trainerSet(sets) {
+    return (sets || puzzleSets()).find(function (s) { return s.endless; }) || null;
   }
 
   /* every puzzle of every set (for totals) */
@@ -669,8 +715,53 @@
     return { solved: solved, total: seen.size };
   }
 
+  /* progress over the puzzles of one kind in the finite sets (the trainer's puzzles don't count here) */
   function kindProgress(kind) {
-    return countSolved(allPuzzles().filter(function (pz) { return puzzleKind(pz) === kind; }));
+    let list = [];
+    finiteSets().forEach(function (s) {
+      list = list.concat(s.puzzles.filter(function (pz) { return puzzleKind(pz, s) === kind; }));
+    });
+    return countSolved(list);
+  }
+
+  function setProgress(id) {
+    const s = findSet(puzzleSets(), id);
+    return s ? countSolved(s.puzzles) : { solved: 0, total: 0 };
+  }
+
+  /*
+   * «Новое!» for content v3: shown to a child who already has progress in the older content (a returning player),
+   * on every v3 group / set until it has its first star (a child who starts fresh sees no badges at all).
+   */
+  function veteran3() {
+    // a child who started with content v3 on this device (first launch or a reset): nothing of it is «new» to them
+    if (freshStartVersion() >= 3) return false;
+    return !!safe(function () {
+      if (groups().some(function (g) { return !isV3(g) && groupStars(g) > 0; })) return true;
+      return finiteSets().some(function (s) {
+        return !isV3(s) && s.puzzles.some(function (pz, i) { return !isV3(pz) && puzzleStars(pz, i) > 0; });
+      });
+    }, false);
+  }
+
+  function freshStartVersion() {
+    try {
+      const v = Number(global.localStorage ? global.localStorage.getItem(FRESH_KEY) : 0);
+      return isFinite(v) && v > 0 ? v : 0;
+    } catch (e) { return 0; }
+  }
+
+  /* the v3 puzzles appended to an older set (mate-in-1 31+, mate-in-2 'm2-11'+, «win» 'w-13'+) */
+  function addedV3(set) {
+    return set && !isV3(set) && !set.endless ? set.puzzles.filter(isV3) : [];
+  }
+
+  /* vet: veteran3() — a whole v3 set: nothing solved yet; an older set: none of its appended v3 puzzles solved */
+  function isNewSet(set, vet) {
+    if (!vet || !set) return false;
+    if (isV3(set)) return countSolved(set.puzzles).solved === 0;
+    const added = addedV3(set);
+    return added.length > 0 && countSolved(added).solved === 0;
   }
 
   /*
@@ -994,17 +1085,20 @@
     });
     const nextIdx = info.findIndex(function (x) { return !x.done; });
     const pct = total ? Math.round(earned * 100 / total) : 0;
-    // a child who played v1 sees the lessons added after v1 marked «Новое!» until they get their first star
-    // (a child who started with v2 has always seen them: no badges)
+    // «Новое!» until the first star: the lessons added after v1 for a child who played v1 (a child who started with
+    // v2 has always seen them), and the v3 lessons for any child who already has progress in the older content
     const vet = earned > 0 && returningV1();
-    info.forEach(function (x) { x.isNew = vet && x.s === 0 && V1_GROUPS.indexOf(String(x.g.id)) < 0; });
+    const vet3 = veteran3();
+    info.forEach(function (x) {
+      x.isNew = x.s === 0 && ((vet && V1_GROUPS.indexOf(String(x.g.id)) < 0) || (vet3 && isV3(x.g)));
+    });
 
-    const nodes = info.map(function (x) {
+    const nodeHtml = function (x) {
       const full = x.n > 0 && x.s >= x.n * 3;
       const cls = 'lr-node' + (x.done ? ' is-done' : '') + (x.i === nextIdx ? ' is-next' : '') + (full ? ' is-full' : '') +
         (x.isNew ? ' is-new' : '');
       return '<button type="button" class="' + cls + '" data-gi="' + x.i + '" style="' + colorVars(x.g.color, x.i) + ';--i:' + x.i + '"' +
-        ' aria-label="Урок ' + (x.i + 1) + ': ' + esc(x.g.title) + '. Звёзд: ' + x.s + ' из ' + (x.n * 3) + '">' +
+        ' aria-label="Урок ' + (x.i + 1) + ': ' + esc(x.g.title) + '. Звёзд: ' + x.s + ' из ' + (x.n * 3) + (x.isNew ? '. Новый урок' : '') + '">' +
         '<span class="lr-node-inner">' +
           '<span class="lr-node-disc">' +
             '<span class="lr-node-num">' + (x.i + 1) + '</span>' +
@@ -1017,6 +1111,32 @@
         '</span>' +
         (x.i === nextIdx ? '<span class="lr-node-flag" aria-hidden="true">Сюда!</span>' : '') +
         '</button>';
+    };
+
+    const runs = chapterRuns(info);
+    const chaptersHtml = runs.map(function (run, k) {
+      const ch = CHAPTERS[run.ch];
+      let s = 0, t = 0;
+      run.items.forEach(function (x) { s += x.s; t += x.n * 3; });
+      const done = run.items.every(function (x) { return x.done; });
+      const fresh = run.items.some(function (x) { return x.isNew; });
+      const cur = run.items.some(function (x) { return x.i === nextIdx; });
+      return '<section class="lr-chapter lr-ch-' + run.ch + (done ? ' is-done' : '') + (cur ? ' is-cur' : '') + (fresh ? ' is-new' : '') + '"' +
+          ' style="--k:' + k + '" aria-label="Часть ' + (k + 1) + ': ' + esc(ch.title) + '">' +
+        '<header class="lr-ch-head">' +
+          '<span class="lr-ch-emoji" aria-hidden="true">' + esc(ch.emoji) + '</span>' +
+          '<span class="lr-ch-main"><span class="lr-ch-num">Часть ' + (k + 1) + '</span>' +
+            '<span class="lr-ch-title">' + esc(ch.title) + '</span></span>' +
+          (fresh ? '<span class="lr-ch-new" aria-hidden="true">Новое!</span>' : '') +
+          '<span class="lr-ch-stars" title="Звёзды за эту часть">' + (done ? '<b class="lr-ch-check" aria-hidden="true">✓</b>' : '') +
+            '<i>★</i> ' + s + '/' + t + '</span>' +
+        '</header>' +
+        '<div class="lr-map" data-run="' + k + '">' +
+          '<div class="lr-deco" aria-hidden="true"></div>' +
+          '<svg class="lr-road" aria-hidden="true" focusable="false"></svg>' +
+          '<div class="lr-nodes">' + run.items.map(nodeHtml).join('') + '</div>' +
+        '</div>' +
+      '</section>';
     }).join('');
 
     el.innerHTML =
@@ -1032,11 +1152,7 @@
           '</div>' +
         '</header>' +
         '<div class="lr-top-mascot"></div>' +
-        '<div class="lr-map">' +
-          '<div class="lr-deco" aria-hidden="true"></div>' +
-          '<svg class="lr-road" aria-hidden="true" focusable="false"></svg>' +
-          '<div class="lr-nodes">' + nodes + '</div>' +
-        '</div>' +
+        '<div class="lr-chapters">' + chaptersHtml + '</div>' +
       '</div>';
 
     el.querySelector('.lr-to-puzzles').addEventListener('click', function () { snd('click'); renderPuzzles(); });
@@ -1049,26 +1165,56 @@
 
     S.mascot = makeMascot(el.querySelector('.lr-top-mascot'), true);
 
-    const map = el.querySelector('.lr-map');
+    const maps = Array.prototype.slice.call(el.querySelectorAll('.lr-map'));
     let lastW = -1;
     const doLayout = function () {
-      if (ep !== S.epoch) return;
-      const w = map.clientWidth;
+      if (ep !== S.epoch || !maps.length) return;
+      const w = maps[0].clientWidth;
       if (!w || w === lastW) return;
       lastW = w;
-      layoutMap(map, nextIdx);
+      maps.forEach(function (map, k) {
+        const items = runs[k].items;
+        const first = items[0].i, last = items[items.length - 1].i;
+        // index of the next lesson inside this chapter: -1 = all of it is behind the child, 0 = all still ahead
+        const local = nextIdx < 0 || nextIdx > last ? -1 : nextIdx < first ? 0 : nextIdx - first;
+        layoutMap(map, local, k === maps.length - 1, nextIdx < 0);
+      });
     };
     doLayout();
-    observeResize(map, doLayout);
+    if (maps.length) observeResize(maps[0], doLayout);
 
     if (opts.celebrate != null) {
-      later(function () { celebrateGroup(map, opts.celebrate); }, 350);
+      later(function () { celebrateGroup(el, opts.celebrate); }, 350);
     } else {
       const gr = mapGreeting(info, nextIdx, earned);
       say(gr.text, { mood: gr.mood, speak: !S.greetedMap });
       S.greetedMap = true;
-      if (nextIdx > 0) later(function () { scrollToNode(map, nextIdx); }, 450);
+      // the first unfinished lesson may be far down the road (22 lessons): bring it into view
+      if (nextIdx > 0) later(function () { scrollToNode(el, nextIdx); }, 450);
     }
+  }
+
+  /* consecutive groups of the same chapter → [{ ch: index in CHAPTERS, items: [info…] }] (in map order) */
+  function chapterRuns(info) {
+    const lastCh = CHAPTERS.length - 1;
+    const runs = [];
+    let prev = 0;
+    info.forEach(function (x) {
+      const id = String(x.g.id);
+      let c = CHAPTERS.findIndex(function (ch) { return ch.ids.indexOf(id) >= 0; });
+      if (c < 0) c = isV3(x.g) ? lastCh : prev;
+      prev = c;
+      const run = runs[runs.length - 1];
+      if (run && run.ch === c) run.items.push(x);
+      else runs.push({ ch: c, items: [x] });
+    });
+    return runs;
+  }
+
+  function chapterTitleOf(gi) {
+    const runs = chapterRuns(groups().map(function (g, i) { return { g: g, i: i }; }));
+    const run = runs.find(function (r) { return r.items.some(function (x) { return x.i === gi; }); });
+    return run ? { title: CHAPTERS[run.ch].title, run: run, runs: runs } : null;
   }
 
   function mapGreeting(info, nextIdx, earned) {
@@ -1105,8 +1251,15 @@
     if (groupDone(g)) {
       fx('fireworks', 2600);
       snd('win');
+      const ch = chapterTitleOf(gi);
+      const chDone = ch && ch.runs.length > 1 && ch.run.items.every(function (x) { return groupDone(x.g); });
       if (allLessonsDone()) {
-        say('Ура! Ты прошёл все уроки! Теперь ты знаешь, как ходят все фигуры!', { mood: 'wow' });
+        say('Ура! Ты прошёл все уроки! Теперь ты знаешь все секреты Шахматного Королевства!', { mood: 'wow' });
+      } else if (chDone) {
+        const nextRun = ch.runs[ch.runs.indexOf(ch.run) + 1];
+        say('Ура! Вся часть «' + ch.title + '» пройдена!' +
+          (nextRun && !nextRun.items.every(function (x) { return groupDone(x.g); }) ?
+            ' Впереди часть «' + CHAPTERS[nextRun.ch].title + '»!' : ' Выбирай следующий урок!'), { mood: 'wow' });
       } else {
         say('Ура! Урок «' + g.title + '» пройден! Выбирай следующий!', { mood: 'wow' });
       }
@@ -1115,7 +1268,12 @@
     }
   }
 
-  function layoutMap(map, nextIdx) {
+  /*
+   * One chapter's road: nodes in rows (serpentine), the road through them, scenery.
+   * nextIdx: index of the next lesson inside this chapter (-1 = all done); withFinish: the last chapter — the road
+   * ends at the castle of the kingdom (won = every lesson of the map is done).
+   */
+  function layoutMap(map, nextIdx, withFinish, won) {
     const W = map.clientWidth;
     if (!W) return;
     const nodes = Array.prototype.slice.call(map.querySelectorAll('.lr-node'));
@@ -1144,7 +1302,7 @@
 
     // a free spot after the last lesson on its row: the road ends at the castle of the kingdom
     let finish = null;
-    if (n > 0 && n % cols !== 0) {
+    if (withFinish !== false && n > 0 && n % cols !== 0) {
       const r = Math.floor(n / cols), k = n % cols;
       const c = r % 2 ? cols - 1 - k : k;
       finish = { x: cellW * (c + 0.5), y: top + r * rowH + disc / 2 + (k % 2 ? 18 : 0), r: r };
@@ -1188,7 +1346,7 @@
         fin.innerHTML = '<span class="lr-finish-art">🏰</span><span class="lr-finish-flag">🚩</span>';
         holder.appendChild(fin);
       }
-      fin.classList.toggle('is-won', nextIdx < 0);
+      fin.classList.toggle('is-won', won === undefined ? nextIdx < 0 : !!won);
       fin.style.left = f(finish.x) + 'px';
       fin.style.top = f(finish.y) + 'px';
     } else if (fin && fin.parentNode) {
@@ -1455,6 +1613,8 @@
     if (allLessonsDone()) unlock('lessons_all');
     const fork = groups().find(function (g) { return g.id === 'fork'; });
     if (fork && groupDone(fork)) unlock('fork_lesson');   // 🔱 «Вилка!»: every level of the fork lesson has a star
+    const v3 = groups().filter(isV3);
+    if (v3.length && v3.every(groupDone)) unlock('lessons_v3');   // 🌟 «Все новые уроки»
     refreshDots(ctx);
     return { gained: gained, prev: prev };
   }
@@ -2132,6 +2292,8 @@
 
   /* goal check: Lessons.checkGoal first, own implementation as a fallback */
   function goalMet(ctx, before, m, after) {
+    // 'solution' (content v3: «Как начинать игру», «Связка»…): one of the level's listed answers (UCI)
+    if (ctx.goal === 'solution' && Array.isArray(ctx.lvl.solutions)) return isSolution(ctx.lvl, m);
     const L = lessonsLib();
     if (L && typeof L.checkGoal === 'function') {
       try { return !!L.checkGoal(ctx.lvl, before, m, after); } catch (e) { warn(e); }
@@ -2249,8 +2411,22 @@
     });
   }
 
+  /* a level's own words for one particular wrong move: lvl.failFor = { 'g1h3': 'С края доски…' } (UCI keys) */
+  function ownFailText(lvl, m) {
+    const map = lvl && lvl.failFor;
+    if (!map || typeof map !== 'object' || !m || !onBoard(m.from) || !onBoard(m.to)) return '';
+    const key = sqName(m.from) + sqName(m.to) + (m.promotion ? TYPE_CHARS.charAt((m.promotion & 7) - 1) : '');
+    const own = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+    return typeof own === 'string' && own ? own : '';
+  }
+
   function taskFailText(ctx, before, m, after) {
     const lvl = ctx.lvl;
+    // a stalemate is a draw, whatever the task was: say so (this is what «Не зевни пат!» is about)
+    if (after && isStalemate(after)) return notMateInfo(after).text;
+    // the level explains this very move (e.g. a knight to the rim in «Как начинать игру»)
+    const own = ownFailText(lvl, m);
+    if (own) return own;
     if (ctx.goal === 'fork') {
       // the piece simply gets eaten there: say exactly that (the board marks who eats it). The level's own
       // «Это не вилка…» would be wrong for a real double attack that only fails because the piece is lost.
@@ -2280,14 +2456,31 @@
       }
       case 'safe':
         return safeFailInfo(before, m, after).text;
+      case 'solution':
+        return solutionFailInfo(m, after).text;
       default: break;
     }
     return (GOALS[ctx.goal] && GOALS[ctx.goal].fail) || 'Не получилось. Попробуй ещё раз!';
   }
 
+  /* a 'solution' task answered with another move: the moved piece can simply be eaten there, or «there's better» */
+  function solutionFailInfo(m, after) {
+    const p = getP(after, m.to);
+    const th = p ? threatOn(after, p & 24, m.to) : null;
+    const takers = th && after.turn !== (p & 24) ?
+      legalMoves(after).filter(function (x) { return x.to === m.to && x.captured; }) : [];
+    if (th && takers.length) {
+      const marks = [{ danger: m.to }];
+      if (onBoard(th.from)) marks.push({ from: th.from, to: m.to });
+      return { text: 'Ой, здесь ' + nameOf(p & 7).acc + ' съедят! Попробуй другой ход.', marks: marks, slow: true };
+    }
+    return { text: GOALS.solution.fail, marks: [], slow: false };
+  }
+
   /* before (the position before the move) is optional */
   function taskWinText(ctx, m, after, before) {
     const goal = ctx.goal;
+    if (ctx.lvl && typeof ctx.lvl.win === 'string' && ctx.lvl.win) return ctx.lvl.win;
     if ((goal === 'promote' || goal === 'promote-q') && m.promotion) {
       return 'Пешка дошла до края и превратилась в ' + nameOf(m.promotion & 7).acc + '!';
     }
@@ -2331,10 +2524,15 @@
     snd('wrong');
     tell(withHintTip(ctx, taskFailText(ctx, before, m, chess)), 'think');
     let slow = false, marked = false;
-    if (ctx.goal === 'mate' && !ctx.lvl.fail) {
+    if (isStalemate(chess) || (ctx.goal === 'mate' && !ctx.lvl.fail)) {
       const info = notMateInfo(chess);
       showMarks(info.marks);
       slow = info.slow;
+    } else if (ctx.goal === 'solution') {
+      const info = solutionFailInfo(m, chess);
+      showMarks(info.marks);
+      marked = info.marks.length > 0;
+      slow = info.slow || !!ctx.lvl.fail;
     } else if (ctx.goal === 'safe' || ctx.goal === 'fork') {
       // who can still eat what (safe) / what the piece attacks or who eats it (fork): marks even with lvl.fail
       const info = ctx.goal === 'safe' ? safeFailInfo(before, m, chess) : forkFailInfo(before, m, chess);
@@ -2433,6 +2631,7 @@
     attention(ctx, '.lr-hint', false);
     V('clearArrows');
     V('clearPulses');
+    if (ctx.kind === 'puzzle') restorePuzzleMarks(ctx);   // «Спасайся!»: the threat stays in sight
     V('pulseSquare', h.from, 'hint');
     if (ctx.hintStep === 0) {
       ctx.hintStep = 1;
@@ -2440,7 +2639,10 @@
     } else {
       ctx.hintStep = 2;
       V('showArrow', h.from, h.to, { kind: 'hint' });
-      tell('Смотри на стрелку — сходи вот так!', 'think');
+      // an under-promotion is part of the answer (e.g. a rook instead of a queen, so that it is not stalemate)
+      const promo = h.promotion ? (toType(h.promotion) & 7) : 0;
+      tell(promo && promo !== QUEEN ? 'Смотри на стрелку — сходи вот так и выбери ' + nameOf(promo).acc + '!' :
+        'Смотри на стрелку — сходи вот так!', 'think');
     }
   }
 
@@ -2604,45 +2806,81 @@
 
   /* what the mascot says when a set is picked */
   function setIntro(set) {
+    if (set.endless) return '«' + set.title + '». ' + (set.text || SET_DEFAULTS.trainer.text);
     const c = countSolved(set.puzzles);
     const head = '«' + set.title + '». ';
     if (c.total && c.solved >= c.total) return head + 'Здесь всё решено! Можно решить задачки ещё раз.';
     return head + (KIND_INTRO[setKind(set)] || set.text || 'Выбирай задачку!');
   }
 
-  /* news: a returning v1 child with solved puzzles (see isFreshSet) */
-  function setTabHtml(set, i, active, news) {
+  /* is the set shown as «Новое!» (content v2 news for a returning v1 child, or content v3 news)? */
+  function setFresh(set, view) {
+    const c = countSolved(set.puzzles);
+    if (!set.endless && c.total > 0 && c.solved >= c.total) return false;
+    return isNewSet(set, view.vet3) || isFreshSet(set, view.news);
+  }
+
+  /* the card the «Сюда!» flag points at: a whole new set (the next step up), else a set with new puzzles, else the
+     last one (if unfinished), else the first unfinished */
+  function suggestedSet(view) {
+    const unfinished = function (s) {
+      const c = countSolved(s.puzzles);
+      return !s.endless && c.solved < c.total;
+    };
+    const fresh = view.sets.find(function (s) { return !s.endless && isV3(s) && setFresh(s, view); }) ||
+      view.sets.find(function (s) { return setFresh(s, view); });
+    if (fresh) return fresh;
+    const last = findSet(view.sets, view.stored);
+    if (last && (last.endless || unfinished(last))) return last;
+    return view.sets.find(unfinished) || trainerSet(view.sets) || null;
+  }
+
+  function setCardHtml(set, i, view, flag) {
     const c = countSolved(set.puzzles);
     const pct = c.total ? Math.round(c.solved * 100 / c.total) : 0;
-    const done = c.total > 0 && c.solved >= c.total;
-    const fresh = !done && isFreshSet(set, news);
-    return '<button type="button" class="lr-set-tab' + (active ? ' is-active' : '') + (done ? ' is-done' : '') + '"' +
-      ' role="tab" aria-selected="' + (active ? 'true' : 'false') + '" data-set="' + esc(set.id) + '"' +
-      ' style="' + colorVars(set.color, i) + ';--i:' + i + '"' +
-      ' aria-label="' + esc(set.title) + '. Решено ' + c.solved + ' из ' + c.total + '">' +
-      '<span class="lr-set-emoji" aria-hidden="true">' + esc(set.emoji) + '</span>' +
-      '<span class="lr-set-name">' + esc(set.title) + '</span>' +
-      '<span class="lr-set-count"><span class="lr-set-word">Решено </span><b>' + c.solved + '</b> из ' + c.total + '</span>' +
-      '<span class="lr-set-bar" aria-hidden="true"><i style="width:' + pct + '%"></i></span>' +
-      (done ? '<span class="lr-set-check" aria-hidden="true">✓</span>' : '') +
-      (fresh ? '<span class="lr-set-new" aria-hidden="true">Новое!</span>' : '') +
+    const done = !set.endless && c.total > 0 && c.solved >= c.total;
+    const fresh = setFresh(set, view);
+    let streak = '';
+    if (set.endless) {
+      const t = trainerState();
+      streak = '<span class="lr-sc-streak"><span class="lr-sc-chip">🔥 Серия: <b>' + t.streak + '</b></span>' +
+        '<span class="lr-sc-chip">🏅 Рекорд: <b>' + t.best + '</b></span></span>';
+    }
+    return '<button type="button" class="lr-set-card' + (set.endless ? ' is-endless' : '') + (done ? ' is-done' : '') +
+        (fresh ? ' is-new' : '') + (flag ? ' is-next' : '') + (view.stored === set.id ? ' is-last' : '') + '"' +
+        ' data-set="' + esc(set.id) + '" style="' + colorVars(set.color, i) + ';--i:' + i + '"' +
+        ' aria-label="' + esc(set.title) + '. Решено ' + c.solved + ' из ' + c.total + (fresh ? '. Новое' : '') + '">' +
+      '<span class="lr-sc-emoji" aria-hidden="true">' + esc(set.emoji) + '</span>' +
+      '<span class="lr-sc-main">' +
+        '<span class="lr-sc-title">' + esc(set.title) + '</span>' +
+        (set.text ? '<span class="lr-sc-text">' + esc(set.text) + '</span>' : '') +
+      '</span>' +
+      streak +
+      '<span class="lr-sc-count"><span class="lr-sc-word">Решено </span><b>' + c.solved + '</b> из ' + c.total + '</span>' +
+      '<span class="lr-sc-bar" aria-hidden="true"><i style="width:' + pct + '%"></i></span>' +
+      (set.endless ? '<span class="lr-sc-play" aria-hidden="true">Играть ▶</span>' : '') +
+      (done ? '<span class="lr-sc-check" aria-hidden="true">✓</span>' : '') +
+      (fresh ? '<span class="lr-sc-new" aria-hidden="true">Новое!</span>' : '') +
+      (flag ? '<span class="lr-sc-flag" aria-hidden="true">Сюда!</span>' : '') +
       '</button>';
   }
 
-  /* news: a returning v1 child — the unsolved «Мат в 1 ход» puzzles added in v2 get a «Новое!» sticker */
-  function tilesHtml(set, news) {
+  /* news: a returning v1 child — the unsolved «Мат в 1 ход» puzzles added in v2 get a «Новое!» sticker;
+     vet3: a returning child — so do the unsolved v3 puzzles appended to the older sets */
+  function tilesHtml(set, news, vet3) {
     const th = themeColors();
     const nextIdx = set.puzzles.findIndex(function (pz, i) { return !puzzleStars(pz, i); });
     const markAdded = !!news && set.id === 'mate1';
+    const mark3 = !!vet3 && !isV3(set);
     return set.puzzles.map(function (pz, i) {
       const d = clamp(Math.round(num(pz.difficulty, 1)), 1, 3);
       const s = puzzleStars(pz, i);
       const title = pz.title || set.title;
-      const added = markAdded && !s && isAddedMate1(pz);
+      const added = !s && ((markAdded && isAddedMate1(pz)) || (mark3 && isV3(pz)));
       let stars = '';
       for (let k = 0; k < 2; k++) stars += '<i' + (k < s ? ' class="on"' : '') + '>★</i>';
       return '<button type="button" class="lr-tile ' + DIFF[d].cls + (s ? ' is-solved' : '') + (i === nextIdx ? ' is-next' : '') + '"' +
-        ' data-i="' + i + '" style="--i:' + i + '" aria-label="Задачка ' + (i + 1) + ': ' + esc(title) +
+        ' data-i="' + i + '" style="--i:' + Math.min(i, 30) + '" aria-label="Задачка ' + (i + 1) + ': ' + esc(title) +
         (s ? ', решена' : added ? ', новая' : '') + '">' +
         '<span class="lr-tile-num">' + (i + 1) + '</span>' +
         (s ? '<span class="lr-tile-check" aria-hidden="true">✓</span>' : '') +
@@ -2654,7 +2892,7 @@
     }).join('');
   }
 
-  function panelHtml(set, single, news) {
+  function panelHtml(set, news, vet3) {
     const c = countSolved(set.puzzles);
     const text = set.text || (SET_DEFAULTS[set.id] && SET_DEFAULTS[set.id].text) || '';
     return '<div class="lr-set-head">' +
@@ -2663,14 +2901,16 @@
           '<h3 class="lr-set-head-title">' + esc(set.title) + '</h3>' +
           (text ? '<p class="lr-set-head-text">' + esc(text) + '</p>' : '') +
         '</div>' +
-        (single ? '<span class="chip lr-set-head-count">Решено <b>' + c.solved + '</b> из ' + c.total + '</span>' : '') +
+        '<span class="chip lr-set-head-count">Решено <b>' + c.solved + '</b> из ' + c.total + '</span>' +
       '</div>' +
-      '<div class="lr-grid">' + tilesHtml(set, news) + '</div>';
+      '<div class="lr-grid">' + tilesHtml(set, news, vet3) + '</div>';
   }
 
   /*
-   * Puzzles screen: overall progress, mascot, one big tab per set (emoji, title, «Решено X из N»), the grid of
-   * the chosen set. opts.set = set id to show; opts.celebrate = came here after the last puzzle of that set.
+   * Puzzles screen: overall progress and the mascot on top; below either the set picker (one big card per set:
+   * emoji, title, «Решено X из N», «Новое!», the trainer's streak) or the grid of one set («← Все задачки» goes
+   * back). opts.set = open that set's grid (e.g. back from one of its puzzles); opts.celebrate = came here after the
+   * last puzzle of that set. With a single set (old data) its grid is shown right away.
    */
   function renderPuzzles(opts) {
     opts = opts || {};
@@ -2682,13 +2922,15 @@
       return;
     }
     const stored = S.puzSet || loadSetId();
-    const set = findSet(sets, opts.set) || findSet(sets, stored) || sets[0];
+    const single = sets.length < 2;
+    let set = single ? sets[0] : findSet(sets, opts.set);
+    if (set && set.endless && !single) set = null;   // the trainer has no grid: its card waits on the picker
     const all = countSolved(allPuzzles());
     const pct = all.total ? Math.round(all.solved * 100 / all.total) : 0;
-    const single = sets.length < 2;
-    // «Новое!» badges and the «появились новые…» greeting: only for a child who played v1 (see returningV1)
+    // «Новое!» badges: content v2 news only for a child who played v1 (see returningV1), v3 news for any child with
+    // progress in the older content (see veteran3)
     const news = all.solved > 0 && returningV1();
-    const view = { el: el, sets: sets, set: set, single: single, news: news, ep: S.epoch };
+    const view = { el: el, sets: sets, set: null, single: single, news: news, vet3: veteran3(), stored: stored, ep: S.epoch };
 
     el.innerHTML =
       '<div class="lr-wrap lr-puz-screen">' +
@@ -2703,31 +2945,21 @@
           '</div>' +
         '</header>' +
         '<div class="lr-top-mascot"></div>' +
-        (single ? '' :
-          '<nav class="lr-sets" role="tablist" aria-label="Наборы задачек" style="--n:' + sets.length + '">' +
-            sets.map(function (s, i) { return setTabHtml(s, i, s === set, news); }).join('') +
-          '</nav>') +
-        '<section class="lr-set-panel" role="tabpanel"></section>' +
+        '<div class="lr-puz-body"></div>' +
       '</div>';
 
     el.querySelector('.lr-to-lessons').addEventListener('click', function () { snd('click'); renderMap(); });
-    el.querySelectorAll('.lr-set-tab').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        if (view.ep !== S.epoch) return;
-        const s = findSet(sets, btn.getAttribute('data-set'));
-        if (!s) return;
-        snd('click');
-        if (s !== view.set) showSet(view, s);
-        tell(setIntro(s), 'happy');
-      });
-    });
-
     S.mascot = makeMascot(el.querySelector('.lr-top-mascot'), true);
-    // new sets marked «Новое!» wait above the grid: keep them in view (no jump down to the next unsolved tile).
-    // Only new «Мат в 1 ход» puzzles: the grid scrolls to the first unsolved tile as usual (the new ones are last).
-    const freshSets = !single && sets.some(function (s) { return s.id !== 'mate1' && isFreshSet(s, news); });
-    showSet(view, set, { scroll: !freshSets });
 
+    if (!set) {
+      showPicker(view);
+      const g = pickerGreeting(view);
+      say(g.text, { mood: g.mood, speak: !S.greetedPuzzles });
+      S.greetedPuzzles = true;
+      return;
+    }
+    // new sets marked «Новое!» wait above the grid (single-set data only has the grid): no jump to the next tile then
+    showSet(view, set, { scroll: true });
     if (opts.celebrate) {
       later(function () { celebrateSet(view, set); }, 350);
       return;
@@ -2737,28 +2969,83 @@
     S.greetedPuzzles = true;
   }
 
-  /* o.scroll = false: stay at the top (the set tabs) instead of scrolling to the next unsolved tile */
+  /* the picker: the regular sets first, the endless trainer last (it spans the rest of the last row) */
+  function showPicker(view) {
+    view.set = null;
+    const body = view.el.querySelector('.lr-puz-body');
+    if (!body) return;
+    const regular = view.sets.filter(function (s) { return !s.endless; });
+    const endless = view.sets.filter(function (s) { return s.endless; });
+    const order = regular.concat(endless);
+    const sug = suggestedSet(view);
+    body.innerHTML = '<nav class="lr-picker" aria-label="Наборы задачек" style="--n:' + regular.length + '">' +
+      order.map(function (s) { return setCardHtml(s, view.sets.indexOf(s), view, s === sug); }).join('') + '</nav>';
+    const picker = body.querySelector('.lr-picker');
+    picker.querySelectorAll('.lr-set-card').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (view.ep !== S.epoch) return;
+        const s = findSet(view.sets, btn.getAttribute('data-set'));
+        if (!s) return;
+        snd('click');
+        if (s.endless) { openTrainer(s.id); return; }
+        showSet(view, s, { scroll: true, top: true });
+        tell(setIntro(s), 'happy');
+      });
+    });
+    let lastW = -1;
+    const fit = function () {
+      if (view.ep !== S.epoch || view.set) return;
+      const W = picker.clientWidth;
+      if (!W || W === lastW) return;
+      lastW = W;
+      layoutPicker(picker, W, regular.length);
+    };
+    fit();
+    observeResize(picker, fit);
+  }
+
+  /* columns by width; an endless card fills the rest of the last row (or a whole row) */
+  function layoutPicker(picker, W, nRegular) {
+    const cols = W >= 900 ? 4 : W >= 560 ? 3 : 2;
+    picker.style.setProperty('--cols', String(cols));
+    const rest = nRegular % cols;
+    const span = rest ? cols - rest : cols;
+    picker.querySelectorAll('.lr-set-card.is-endless').forEach(function (c) {
+      c.style.gridColumn = 'span ' + span;
+      c.classList.toggle('is-wide', span >= 2);
+    });
+  }
+
+  /* o.scroll: bring the next unsolved tile into view; o.top: came from the picker — start at the top */
   function showSet(view, set, o) {
     view.set = set;
     storeSetId(set.id);
-    view.el.querySelectorAll('.lr-set-tab').forEach(function (b) {
-      const on = b.getAttribute('data-set') === set.id;
-      b.classList.toggle('is-active', on);
-      b.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    const panel = view.el.querySelector('.lr-set-panel');
-    if (!panel) return;
-    panel.setAttribute('style', colorVars(set.color, view.sets.indexOf(set)));
-    panel.setAttribute('data-set', set.id);
-    panel.innerHTML = panelHtml(set, view.single, view.news);
-    panel.querySelectorAll('.lr-tile').forEach(function (t) {
+    view.stored = set.id;
+    const body = view.el.querySelector('.lr-puz-body');
+    if (!body) return;
+    body.innerHTML = (view.single ? '' :
+        '<div class="lr-set-nav"><button type="button" class="btn btn-ghost lr-to-picker">← Все задачки</button></div>') +
+      '<section class="lr-set-panel" data-set="' + esc(set.id) + '" style="' + colorVars(set.color, view.sets.indexOf(set)) + '">' +
+        panelHtml(set, view.news, view.vet3) + '</section>';
+    const back = body.querySelector('.lr-to-picker');
+    if (back) {
+      back.addEventListener('click', function () {
+        if (view.ep !== S.epoch) return;
+        snd('click');
+        showPicker(view);
+        safe(function () { global.scrollTo(0, 0); });
+        tell('Выбирай набор задачек!', 'happy', false);
+      });
+    }
+    body.querySelectorAll('.lr-tile').forEach(function (t) {
       t.addEventListener('click', function () {
         snd('click');
         openPuzzle(num(t.getAttribute('data-i'), 0), set.id);
       });
     });
+    if (o && o.top) safe(function () { global.scrollTo(0, 0); });
     const nextIdx = set.puzzles.findIndex(function (pz, i) { return !puzzleStars(pz, i); });
-    if (nextIdx > 3 && !(o && o.scroll === false)) later(function () { scrollToTile(view, nextIdx); }, 450);
+    if (nextIdx > 3 && o && o.scroll) later(function () { scrollToTile(view, nextIdx); }, 450);
   }
 
   function scrollToTile(view, i) {
@@ -2770,11 +3057,11 @@
 
   /*
    * The first visit of a returning v1 child to the puzzles screen with sets: name the new sets and the new
-   * «Мат в 1 ход» puzzles. → text | ''
+   * «Мат в 1 ход» puzzles (content v2). → text | ''
    */
   function newsGreeting(sets, name, seenSets, news) {
     if (seenSets || !news || sets.length < 2) return '';
-    const fresh = sets.filter(function (s) { return s.id !== 'mate1' && isFreshSet(s, news); });
+    const fresh = sets.filter(function (s) { return s.id !== 'mate1' && !isV3(s) && !s.endless && isFreshSet(s, news); });
     const m1 = findSet(sets, 'mate1');
     const n = m1 ? unseenAddedMate1(m1).length : 0;
     const m1Title = '«' + (m1 ? m1.title : SET_DEFAULTS.mate1.title) + '»';
@@ -2787,6 +3074,49 @@
     if (!n) return '';
     if (n === 1) return 'Смотри, ' + name + ', появилась новая задачка ' + m1Title + '! Она ждёт тебя в конце списка.';
     return 'Смотри, ' + name + ', появились новые задачки ' + m1Title + ' — целых ' + n + '! Они ждут тебя в конце списка.';
+  }
+
+  /* content v3 news for a returning child (see veteran3): the new sets, and the new puzzles in the older sets */
+  function newsV3Greeting(sets, name, vet3) {
+    if (!vet3) return '';
+    const fresh = sets.filter(function (s) { return isV3(s) && isNewSet(s, vet3); });
+    let added = 0;
+    sets.forEach(function (s) {
+      const a = addedV3(s);
+      if (a.length) added += a.length - countSolved(a).solved;
+    });
+    const more = added ? ' И ещё ' + added + ' ' + plural(added, 'новая задачка', 'новые задачки', 'новых задачек') +
+      ' в старых наборах!' : '';
+    if (fresh.length) {
+      return 'Смотри, ' + name + ', сколько нового! ' + joinAnd(fresh.map(function (s) { return '«' + s.title + '»'; })) +
+        (fresh.length > 1 ? ' ждут тебя.' : ' ждёт тебя.') + more;
+    }
+    if (!added) return '';
+    return 'Смотри, ' + name + '! В наборах ' + plural(added, 'появилась', 'появились', 'появилось') + ' ' + added + ' ' +
+      plural(added, 'новая задачка', 'новые задачки', 'новых задачек') + '. Они с наклейкой «Новое!».';
+  }
+
+  /* what the mascot says on the picker */
+  function pickerGreeting(view) {
+    const name = childName();
+    const all = countSolved(allPuzzles());
+    if (all.solved === 0) {
+      const first = view.sets.find(function (s) { return !s.endless; }) || view.sets[0];
+      return { text: 'Задачки — это загадки, ' + name + '! Нажми на набор. Начни с задачек «' + first.title + '»!', mood: 'happy' };
+    }
+    const n3 = newsV3Greeting(view.sets, name, view.vet3);
+    if (n3) return { text: n3, mood: 'wow' };
+    const n2 = newsGreeting(view.sets, name, !!view.stored, view.news);
+    if (n2) return { text: n2, mood: 'wow' };
+    const open = finiteSets().filter(function (s) { const c = countSolved(s.puzzles); return c.solved < c.total; });
+    const tr = trainerSet(view.sets);
+    if (!open.length) {
+      return {
+        text: 'Ты решил все задачки, ' + name + '! Ты — настоящий мастер!' + (tr ? ' А в тренажёре задачки не кончаются никогда!' : ''),
+        mood: 'wow'
+      };
+    }
+    return { text: 'Выбирай набор задачек, ' + name + '! ' + (tr ? 'А в тренажёре можно решать задачки без конца.' : ''), mood: 'happy' };
   }
 
   /* seenSets: the puzzles screen with sets was opened before; news: a returning v1 child (see renderPuzzles) */
@@ -2816,7 +3146,7 @@
     const c = countSolved(set.puzzles);
     const done = c.total > 0 && c.solved >= c.total;
     const others = view.sets.filter(function (s) {
-      if (s === set) return false;
+      if (s === set || s.endless) return false;
       const x = countSolved(s.puzzles);
       return x.solved < x.total;
     });
@@ -2839,8 +3169,19 @@
   const KIND_VOICE = {
     mate1: 'Мат — это когда на короля напали, а убежать, закрыться или съесть того, кто напал, нельзя.',
     mate2: 'Сначала сделай хитрый ход. Соперник ответит, а потом ты поставишь мат!',
-    win: 'Найди ход, после которого соперник обязательно потеряет фигуру!'
+    mate3: 'Здесь три твоих хода. После каждого соперник ответит. Загоняй короля, пока ему некуда будет деться!',
+    win: 'Найди ход, после которого соперник обязательно потеряет фигуру!',
+    save: 'Сначала посмотри на красную стрелку — это угроза соперника. Потом найди ход, который её отобьёт!',
+    endgame: 'Соперник будет отвечать на каждый твой ход. Прижимай короля к краю доски — там ему можно поставить мат!'
   };
+
+  function endgameGoal(pz) { return pz && pz.goal === 'promote' ? 'promote' : 'mate'; }
+
+  function puzzleTaskText(pz, pkind) {
+    if (pz.text) return String(pz.text);
+    if (pkind === 'endgame' && endgameGoal(pz) === 'promote') return 'Проведи пешку в ферзи!';
+    return KIND_TASK[pkind] || KIND_TASK.mate1;
+  }
 
   /* idx: 0-based index in the set (or a puzzle id like 'm2-3'); setId: default = «Мат в 1 ход» */
   function openPuzzle(idx, setId) {
@@ -2863,13 +3204,15 @@
     idx = ((Math.floor(num(idx, 0)) % list.length) + list.length) % list.length;
     const pz = list[idx];
     const pkind = puzzleKind(pz, set);
+    const trainer = !!set.endless;
     const el = enter('puzzle');
     installArt();
     storeSetId(set.id);
+    if (trainer) trainerState().last = String(pz.id);
     const d = clamp(Math.round(num(pz.difficulty, 1)), 1, 3);
-    const text = String(pz.text || KIND_TASK[pkind]);
+    const text = puzzleTaskText(pz, pkind);
     const ctx = {
-      ep: S.epoch, idx: idx, pz: pz, set: set, list: list, pkind: pkind, kind: 'puzzle', text: text,
+      ep: S.epoch, idx: idx, pz: pz, set: set, list: list, pkind: pkind, kind: 'puzzle', text: text, trainer: trainer,
       root: null, busy: false, done: false, step: 1, reply: null, openedAt: now()
     };
     S.puzzle = ctx;
@@ -2878,7 +3221,7 @@
     const color = d === 1 ? '#2ecc71' : d === 2 ? '#6c63ff' : '#ff6fae';
 
     el.innerHTML =
-      '<div class="lr-play lr-kind-puzzle lr-pk-' + pkind + '" style="' + colorVars(color, 0) + '">' +
+      '<div class="lr-play lr-kind-puzzle lr-pk-' + pkind + (trainer ? ' lr-trainer' : '') + '" style="' + colorVars(color, 0) + '">' +
         '<header class="screen-header lr-head">' +
           '<button type="button" class="btn btn-ghost lr-back">← Задачки</button>' +
           '<h2 class="lr-head-title"><span class="lr-head-icon"><span class="lr-emoji">' + esc(set.emoji) + '</span></span>' +
@@ -2890,6 +3233,7 @@
             '<div class="lr-task-main">' +
               '<span class="lr-task-badge">' + esc(set.title) + '</span>' +
               '<p class="lr-task-text">' + esc(text) + '</p>' +
+              (pkind === 'endgame' ? '<p class="lr-eg-mini" aria-hidden="true"></p>' : '') +
             '</div>' +
             '<button type="button" class="btn btn-icon lr-say" aria-label="Послушать задание" title="Послушать">🔊</button>' +
           '</div>' +
@@ -2899,7 +3243,7 @@
             '<div class="lr-meter"></div>' +
             '<button type="button" class="btn btn-yellow btn-big lr-hint">💡 Подсказка</button>' +
             '<button type="button" class="btn btn-secondary btn-big lr-restart">↻ Заново</button>' +
-            '<button type="button" class="btn btn-green btn-big lr-next">➜ Следующая</button>' +
+            '<button type="button" class="btn btn-green btn-big lr-next">' + (trainer ? 'Ещё задачка ➜' : '➜ Следующая') + '</button>' +
           '</div>' +
         '</div>' +
       '</div>';
@@ -2909,7 +3253,7 @@
     el.querySelector('.lr-back').addEventListener('click', function () {
       if (tooSoon(ctx)) return;
       snd('click');
-      renderPuzzles({ set: set.id });
+      renderPuzzles(trainer ? {} : { set: set.id });
     });
     el.querySelector('.lr-say').addEventListener('click', function () { speakNow(text); });
     el.querySelector('.lr-hint').addEventListener('click', function () { if (!tooSoon(ctx)) puzzleHint(ctx); });
@@ -2925,12 +3269,12 @@
       orientation: 'w',
       interactive: true,
       canSelect: function (sq) {
-        if (!alive(ctx) || ctx.busy || ctx.done || !ctx.chess) return false;
+        if (!alive(ctx) || ctx.busy || ctx.done || ctx.over || !ctx.chess) return false;
         const p = getP(ctx.chess, sq);
         return !!p && (p & 24) === ctx.chess.turn;
       },
       getMoves: function (sq) {
-        if (!alive(ctx) || ctx.busy || ctx.done || !ctx.chess) return [];
+        if (!alive(ctx) || ctx.busy || ctx.done || ctx.over || !ctx.chess) return [];
         return legalMoves(ctx.chess, sq);
       },
       onMove: function (mv) {
@@ -2938,7 +3282,7 @@
       },
       onIllegal: function (from, to) { puzzleIllegal(ctx, from, to, true); },
       onSquareClick: function (sq) {
-        if (!alive(ctx) || ctx.busy || ctx.done || !ctx.chess) return;
+        if (!alive(ctx) || ctx.busy || ctx.done || ctx.over || !ctx.chess) return;
         sq = toSq(sq);
         if (onBoard(sq)) playSquareClick(ctx.chess, sq);
       }
@@ -2951,8 +3295,19 @@
       say('Ой! Эта задачка не открылась. Выбери другую.', { mood: 'sad' });
       return;
     }
-    say(text, { mood: 'happy' });
-    if (idx === 0 && kindProgress(pkind).solved === 0 && KIND_VOICE[pkind]) {
+    if (pkind === 'save' && ctx.threat) {
+      say(ctx.threat.text, { mood: 'warn' });
+    } else if (pkind === 'endgame') {
+      // the task card already shows the (long) text: the bubble gets a short line, the voice reads the whole task
+      say(endgameStartLine(ctx), { mood: 'happy', speak: false });
+      voiceSay(text);
+    } else if (trainer) {
+      const t = trainerState();
+      say(t.streak >= 2 ? text + ' Серия: ' + t.streak + ' подряд!' : text, { mood: 'happy' });
+    } else {
+      say(text, { mood: 'happy' });
+    }
+    if (!trainer && idx === 0 && kindProgress(pkind).solved === 0 && KIND_VOICE[pkind]) {
       voiceSay(KIND_VOICE[pkind], { interrupt: false });
     }
   }
@@ -2962,6 +3317,11 @@
     if (!C) return false;
     const chess = safe(function () { return new C(ctx.pz.fen); }, null);
     if (!chess || chess.loadError) return false;
+    // the trainer's streak grows only for a puzzle solved cleanly: a hint or a mistake before «↻ Заново» still counts
+    if (ctx.trainer) {
+      ctx.hintEver = !!(ctx.hintEver || ctx.hintUsed);
+      ctx.missEver = !!(ctx.missEver || ctx.mistakes > 0);
+    }
     ctx.chess = chess;
     ctx.step = 1;
     ctx.reply = null;
@@ -2969,9 +3329,21 @@
     ctx.hintUsed = false;
     ctx.mistakes = 0;
     ctx.done = false;
+    ctx.over = false;          // an endgame that was lost (the board stays until «↻ Заново»)
     ctx.busy = false;
+    ctx.thinking = false;      // endgame: Black is thinking
+    ctx.moves = 0;             // endgame: White moves made
+    ctx.hintMove = null;       // endgame: the engine hint for a position {fen, move}
+    ctx.hintWait = null;
     ctx.gen = (ctx.gen | 0) + 1;   // a new attempt: moves / replies still running from the old one must not land
     ctx.pendingHint = false;
+    if (ctx.pkind === 'endgame') {
+      ctx.goalKind = endgameGoal(ctx.pz);
+      ctx.maxMoves = Math.max(1, Math.floor(num(ctx.pz.maxMoves, 30)));
+      ctx.par = clamp(Math.floor(num(ctx.pz.par, ctx.maxMoves)), 1, ctx.maxMoves);
+      ctx.officers = officers(chess);
+    }
+    ctx.threat = ctx.pkind === 'save' ? threatInfo(ctx.pz, chess) : null;
     V('setInteractive', true);
     V('deselect');
     V('clearArrows');
@@ -2981,8 +3353,17 @@
     V('clearLastMove');
     V('setPosition', chess, {});
     refreshCheck(chess);
+    restorePuzzleMarks(ctx);
     updatePuzzleMeter(ctx);
     return true;
+  }
+
+  /* marks that belong to the position itself: the threat of a «Спасайся!» puzzle */
+  function restorePuzzleMarks(ctx) {
+    const th = ctx.threat;
+    if (!th || ctx.done || ctx.step !== 1) return;
+    V('showArrow', th.from, th.to, { kind: 'danger' });
+    if (th.scared >= 0) V('setDanger', [th.scared]);
   }
 
   function restartPuzzle(ctx) {
@@ -2992,12 +3373,21 @@
     snd('whoosh');
     attention(ctx, '.lr-restart', false);
     attention(ctx, '.lr-hint', false);
-    if (setupPuzzle(ctx)) say('Начнём сначала! ' + ctx.text, { mood: 'happy', speak: false });
+    if (setupPuzzle(ctx)) {
+      say('Начнём сначала! ' + (ctx.threat ? ctx.threat.text : ctx.pkind === 'endgame' ? endgameStartLine(ctx) : ctx.text),
+        { mood: 'happy', speak: false });
+    }
+  }
+
+  /* the mascot's short line when an endgame starts (a long bubble would run below the fold on a landscape iPad) */
+  function endgameStartLine(ctx) {
+    return ctx.goalKind === 'promote' ? 'Твой ход! Веди пешку в ферзи.' : 'Твой ход! Прижимай короля к краю.';
   }
 
   /* «➜ Следующая»: the next puzzle of the same set; after the last one — a celebration on the grid.
-     preferUnsolved (the result modal): the next one that is not solved yet, if there is one */
+     preferUnsolved (the result modal): the next one that is not solved yet, if there is one. The trainer: another one */
   function nextPuzzle(ctx, preferUnsolved) {
+    if (ctx.trainer) { openTrainer(ctx.set.id); return; }
     const list = ctx.list, n = list.length;
     if (preferUnsolved) {
       for (let k = 1; k < n; k++) {
@@ -3011,8 +3401,13 @@
 
   function replyOf(pz) { return pz && pz.reply ? pz.reply : null; }
 
+  function mateN(ctx) { return MATE_N[ctx.pkind] || 1; }
+
+  /* moves still needed to mate, counting the child's current one */
+  function remainingOf(ctx) { return Math.max(1, mateN(ctx) - ctx.step + 1); }
+
   function totalSteps(ctx) {
-    if (ctx.pkind === 'mate2') return 2;
+    if (MATE_N[ctx.pkind] > 1) return MATE_N[ctx.pkind];
     if (ctx.pkind === 'win' && replyOf(ctx.pz)) return 2;
     return 1;
   }
@@ -3020,6 +3415,18 @@
   function updatePuzzleMeter(ctx) {
     const box = ctx.root && ctx.root.querySelector('.lr-meter');
     if (!box) return;
+    if (ctx.pkind === 'endgame') {
+      box.innerHTML = endgameMeterHtml(ctx);
+      // the stacked (portrait) layout has the meter below the board: a short status line above it, in the task card
+      const mini = ctx.root.querySelector('.lr-eg-mini');
+      if (mini) {
+        const max = ctx.maxMoves, cur = ctx.done || ctx.over ? ctx.moves : Math.min(ctx.moves + 1, max);
+        // the «думает…» line is always there (hidden when idle): the card and the board below it never jump
+        mini.innerHTML = '<b>Ход ' + cur + ' из ' + max + '</b>' +
+          '<span class="lr-eg-mini-think' + (ctx.thinking ? ' on' : '') + '">🤔 Соперник думает…</span>';
+      }
+      return;
+    }
     const s = puzzleStars(ctx.pz, ctx.idx);
     const steps = totalSteps(ctx);
     let stepsHtml = '';
@@ -3029,6 +3436,18 @@
       for (let i = 1; i <= steps; i++) dots += '<i class="' + (i < cur ? 'done' : i === cur ? 'on' : '') + '"></i>';
       stepsHtml = '<div class="lr-steps">' + dots + '<span>' + (ctx.done ? 'Готово!' : 'Ход ' + ctx.step + ' из ' + steps) + '</span></div>';
     }
+    if (ctx.trainer) {
+      const t = trainerState();
+      const c = countSolved(ctx.list);
+      box.innerHTML =
+        '<div class="lr-goal"><span>' + esc(ctx.set.emoji) + '</span> ' + esc(ctx.set.title) + '</div>' +
+        stepsHtml +
+        '<div class="lr-tr-line"><span class="lr-tr-streak' + (t.streak >= 5 ? ' hot' : '') + '">🔥 Серия: <b>' + t.streak + '</b></span>' +
+          '<span class="lr-tr-best">🏅 Рекорд: <b>' + t.best + '</b></span></div>' +
+        '<div class="lr-tr-count">Решено <b>' + c.solved + '</b> из ' + c.total + '</div>' +
+        '<p class="lr-meter-note">' + (s ? 'Эта задачка уже решена!' : 'За новую задачку — звёздочка ⭐') + '</p>';
+      return;
+    }
     box.innerHTML =
       '<div class="lr-goal"><span>' + esc(ctx.set.emoji) + '</span> ' + esc(ctx.set.title) + '</div>' +
       stepsHtml +
@@ -3036,8 +3455,25 @@
       '<p class="lr-meter-note">' + (s ? 'Эта задачка уже решена!' : 'Без подсказки — 2 звезды') + '</p>';
   }
 
+  function endgameMeterHtml(ctx) {
+    const s = puzzleStars(ctx.pz, ctx.idx);
+    const max = ctx.maxMoves;
+    const finished = ctx.done || ctx.over;
+    const cur = finished ? ctx.moves : Math.min(ctx.moves + 1, max);
+    const left = max - ctx.moves;
+    const pct = Math.round(Math.min(ctx.moves, max) * 100 / max);
+    const parPct = Math.round(ctx.par * 100 / max);
+    const goal = ctx.goalKind === 'promote' ? '<span>👑</span> Цель: пешка — в ферзи' : '<span>🎯</span> Цель: мат';
+    return '<div class="lr-goal">' + goal + '</div>' +
+      '<div class="lr-eg-count' + (!finished && left <= 5 ? ' warn' : '') + '" aria-label="Ход ' + cur + ' из ' + max + '">Ход <b>' + cur + '</b> из ' + max + '</div>' +
+      '<div class="lr-eg-bar" aria-hidden="true"><i style="width:' + pct + '%"></i><em style="left:' + parPct + '%">⭐</em></div>' +
+      '<div class="lr-eg-think' + (ctx.thinking ? ' on' : '') + '" aria-live="polite">' + (ctx.thinking ? '🤔 Соперник думает<span class="lr-dots3"><i>.</i><i>.</i><i>.</i></span>' : '&nbsp;') + '</div>' +
+      '<div class="lr-best"><span>Рекорд:</span>' + ratingHtml(s, 2) + '</div>' +
+      '<p class="lr-meter-note">2 звезды — если справишься за ' + movesWord(ctx.par) + ' без подсказки</p>';
+  }
+
   function puzzleIllegal(ctx, from, to, fromBoard) {
-    if (!alive(ctx) || ctx.busy || ctx.done || !ctx.chess) return;
+    if (!alive(ctx) || ctx.busy || ctx.done || ctx.over || !ctx.chess) return;
     from = toSq(from);
     to = toSq(to);
     if (!onBoard(from) || !getP(ctx.chess, from)) return;
@@ -3099,8 +3535,83 @@
     return everyReplyMates(after);
   }
 
+  /*
+   * Own forced-mate search (only when Lessons.isMateInMove / mateInN are missing; small boards): does the side to
+   * move force mate in ≤ n? budget.left counts positions; when it runs out the answer is «yes» (lenient).
+   */
+  function forcesMateLocal(chess, n, budget) {
+    if (--budget.left < 0) return true;
+    const ms = legalMoves(chess);
+    for (let i = 0; i < ms.length; i++) {
+      const x = ms[i];
+      const made = safe(function () { return chess.move({ from: x.from, to: x.to, promotion: x.promotion || undefined }); }, null);
+      if (!made) continue;
+      let ok;
+      if (isMate(chess)) ok = true;
+      else if (n <= 1) ok = false;
+      else ok = repliesAllForce(chess, n - 1, budget);
+      safe(function () { chess.undo(); });
+      if (ok) return true;
+    }
+    return false;
+  }
+
+  function repliesAllForce(chess, n, budget) {
+    const rs = legalMoves(chess);
+    if (!rs.length) return isMate(chess);
+    for (let i = 0; i < rs.length; i++) {
+      const r = rs[i];
+      const made = safe(function () { return chess.move({ from: r.from, to: r.to, promotion: r.promotion || undefined }); }, null);
+      if (!made) continue;
+      const ok = forcesMateLocal(chess, n, budget);
+      safe(function () { chess.undo(); });
+      if (!ok) return false;
+    }
+    return true;
+  }
+
+  /* White's move m (before → after) in a mate in n: mates now, or every reply leaves a forced mate in n − 1 */
+  function mateInMoveOk(before, m, after, n) {
+    if (isMate(after)) return true;
+    if (n <= 1 || !legalMoves(after).length) return false;
+    const L = lessonsLib();
+    if (L && typeof L.isMateInMove === 'function') {
+      const r = safe(function () {
+        return L.isMateInMove(before.clone(), { from: m.from, to: m.to, promotion: m.promotion ? (m.promotion & 7) : 0 }, n);
+      }, null);
+      if (r !== null && r !== undefined) return !!r;
+    }
+    if (n === 2) return mate2Ok(before, m, after);
+    const scratch = safe(function () { return after.clone(); }, null);
+    return scratch ? repliesAllForce(scratch, n - 1, { left: 60000 }) : true;
+  }
+
+  /* moves of the side to move that force mate in ≤ n, the quickest first (Lessons.mateInN; own search as a fallback) */
+  function mateMoves(chess, n) {
+    if (n <= 1) return safe(function () { return chess.mateInOne(); }, []) || [];
+    const L = lessonsLib();
+    if (L && typeof L.mateInN === 'function') {
+      const r = safe(function () { return L.mateInN(chess.clone(), n); }, null);
+      if (Array.isArray(r)) {
+        return r.filter(Boolean).slice().sort(function (a, b) { return num(a.mateIn, n) - num(b.mateIn, n); });
+      }
+    }
+    return legalMoves(chess).filter(function (x) {
+      const before = safe(function () { return chess.clone(); }, null);
+      const after = safe(function () { return chess.clone(); }, null);
+      if (!before || !after) return false;
+      const made = safe(function () { return after.move({ from: x.from, to: x.to, promotion: x.promotion || undefined }); }, null);
+      return !!made && mateInMoveOk(before, made, after, n);
+    });
+  }
+
   /* after a wrong first move: a black answer that escapes the mate (a king move preferred) | null */
   function escapeReply(after) {
+    return escapeReplyN(after, 1);
+  }
+
+  /* after a wrong move with n moves left for White afterwards: a reply leaving White no mate in ≤ n (king move first) */
+  function escapeReplyN(after, n) {
     const replies = legalMoves(after);
     const scratch = safe(function () { return after.clone(); }, null);
     if (!scratch) return null;
@@ -3109,9 +3620,9 @@
       const r = replies[i];
       const made = safe(function () { return scratch.move({ from: r.from, to: r.to, promotion: r.promotion || undefined }); }, null);
       if (!made) continue;
-      const mates = safe(function () { return scratch.mateInOne(); }, []) || [];
+      const mates = mateMoves(scratch, n).length;
       safe(function () { scratch.undo(); });
-      if (mates.length) continue;
+      if (mates) continue;
       const rank = (r.piece & 7) === KING ? 2 : r.captured ? 1 : 0;
       if (rank > bestRank) { best = r; bestRank = rank; }
     }
@@ -3141,6 +3652,30 @@
     return pickLegal(legal, best);
   }
 
+  /* Black's answer when White still has n moves to mate (counting the one just made): Lessons.bestDefenseN */
+  function defenseN(chess, n) {
+    const legal = legalMoves(chess);
+    if (!legal.length) return null;
+    const L = lessonsLib();
+    if (L && typeof L.bestDefenseN === 'function') {
+      const hit = pickLegal(legal, safe(function () { return L.bestDefenseN(chess.clone(), n); }, null));
+      if (hit) return hit;
+    }
+    if (n <= 2) return blackDefense(chess);
+    const scratch = safe(function () { return chess.clone(); }, null);
+    let best = legal[0], bestN = Infinity;
+    if (scratch) {
+      legal.forEach(function (r) {
+        const made = safe(function () { return scratch.move({ from: r.from, to: r.to, promotion: r.promotion || undefined }); }, null);
+        if (!made) return;
+        const k = mateMoves(scratch, n - 1).length;
+        safe(function () { scratch.undo(); });
+        if (k < bestN) { bestN = k; best = r; }
+      });
+    }
+    return pickLegal(legal, best);
+  }
+
   /* a right first move for a mate-in-2 puzzle (for the hint when p.hint is missing or unusable) */
   function findMate2Move(chess) {
     const legal = legalMoves(chess);
@@ -3155,12 +3690,19 @@
     return null;
   }
 
+  /* a move that keeps the forced mate with n moves left (the quickest), for hints */
+  function mateHintMove(chess, n) {
+    const ms = mateMoves(chess, n);
+    if (ms.length) return normMove(ms[0]);
+    return n === 2 ? findMate2Move(chess) : null;
+  }
+
   function solutionsOf(pz) {
     if (Array.isArray(pz.solutions)) return pz.solutions.filter(Boolean);
     return pz.solution ? [pz.solution] : [];
   }
 
-  /* first move of a «win a piece» puzzle: one of the listed solutions (UCI, promotion letter included) */
+  /* first move of a «win a piece» puzzle / a 'solution' task: one of the listed solutions (UCI, promotion included) */
   function isSolution(pz, m) {
     const sols = solutionsOf(pz);
     if (!sols.length) return true;
@@ -3190,10 +3732,112 @@
     return pick ? { from: pick.from, to: pick.to, promotion: pick.promotion ? (pick.promotion & 7) : 0 } : null;
   }
 
+  /* a copy of the position with the other side to move (to look at the opponent's threat) | null */
+  function withTurn(chess, color) {
+    const C = CH();
+    if (!C) return null;
+    return safe(function () {
+      const f = String(chess.fen()).split(/\s+/);
+      f[1] = color === BLACK ? 'b' : 'w';
+      f[3] = '-';
+      const c = new C(f.join(' '));
+      return c.turn === color ? c : null;
+    }, null);
+  }
+
+  /*
+   * «Спасайся!»: what Black threatens on the start position (pz.threat = the threatening move) —
+   * → { from, to, text, mate, scared } (scared: the square of the white piece in danger, or -1) | null
+   */
+  function threatInfo(pz, chess) {
+    const t = pz && pz.threat ? anyMove(pz.threat) : null;
+    if (!t) return null;
+    const out = { from: t.from, to: t.to, text: 'Соперник что-то задумал! Смотри на красную стрелку.', mate: false, scared: -1 };
+    const victim = getP(chess, t.to);
+    if (victim && (victim & 24) === WHITE) out.scared = t.to;
+    const c = withTurn(chess, BLACK);
+    const mv = c ? safe(function () { return c.move({ from: t.from, to: t.to, promotion: t.promotion || undefined }); }, null) : null;
+    if (!mv) return out;
+    if (isMate(c)) {
+      out.mate = true;
+      out.scared = kingSq(chess, WHITE);
+      out.text = 'Соперник угрожает поставить мат! Смотри на красную стрелку.';
+      return out;
+    }
+    if (mv.captured) {
+      const nm = nameOf(mv.captured & 7);
+      out.text = 'Соперник угрожает съесть ' + possAcc(nm) + ' ' + nm.acc + '! Смотри на красную стрелку.';
+      return out;
+    }
+    const ts = forkTargets(c, t.to).filter(function (x) { return (x.piece & 7) === KING || valueOf(x.piece) >= 300; });
+    if (ts.length >= 2) out.text = 'Соперник угрожает вилкой! Смотри на красную стрелку.';
+    return out;
+  }
+
+  /* after a wrong «Спасайся!» move (Black to move): how Black punishes it → { text, marks, sure } */
+  function punishment(after, th) {
+    const mates = safe(function () { return after.mateInOne(); }, []) || [];
+    if (mates.length) {
+      return { text: 'Ой! Тогда соперник поставит мат. Смотри на красную стрелку!', marks: [{ from: mates[0].from, to: mates[0].to }], sure: true };
+    }
+    const legal = legalMoves(after);
+    const again = th ? legal.find(function (x) { return x.from === th.from && x.to === th.to; }) : null;
+    if (again && again.captured) {
+      const nm = nameOf(again.captured & 7);
+      return {
+        text: 'Ой! Угроза осталась: соперник съест ' + possAcc(nm) + ' ' + nm.acc + '!',
+        marks: [{ danger: again.to }, { from: again.from, to: again.to }], sure: true
+      };
+    }
+    const h = threatOn(after, WHITE);
+    if (h && valueOf(h.piece) >= 300) {
+      const nm = nameOf(h.piece & 7);
+      const marks = [{ danger: h.sq }];
+      if (onBoard(h.from)) marks.push({ from: h.from, to: h.sq });
+      return { text: 'Ой! Тогда соперник съест ' + possAcc(nm) + ' ' + nm.acc + '!', marks: marks, sure: true };
+    }
+    if (again) return { text: 'Ой! Угроза осталась. Смотри на красную стрелку!', marks: [{ from: again.from, to: again.to }], sure: false };
+    return { text: 'Так угрозу не отбить. Попробуй другой ход!', marks: th ? [{ from: th.from, to: th.to }] : [], sure: false };
+  }
+
+  function saveWinLine(ctx, m) {
+    const th = ctx.threat;
+    if (th && m.captured && m.to === th.from) return 'Ам! Ты съел фигуру, которая угрожала!';
+    if (th && th.mate) return 'Ты спас короля от мата!';
+    if (th && m.from === th.to) {
+      const nm = nameOf(m.piece & 7);
+      return nm.Nom + (nm.g === 'f' ? ' убежала' : ' убежал') + ' от угрозы!';
+    }
+    return 'Угроза отбита! Соперник ничего не выиграет.';
+  }
+
+  /* white pieces other than the king and pawns (a promoted pawn adds one) */
+  function officers(chess) {
+    let n = 0;
+    for (let sq = 0; sq < 128; sq++) {
+      if (sq & 0x88) continue;
+      const p = getP(chess, sq);
+      if (p && (p & 24) === WHITE && (p & 7) !== KING && (p & 7) !== PAWN) n++;
+    }
+    return n;
+  }
+
+  /* 'stalemate' | 'repeat' | 'draw' | '' */
+  function drawReason(chess) {
+    const st = safe(function () { return typeof chess.status === 'function' ? chess.status() : null; }, null);
+    if (st && st.over && st.reason !== 'checkmate') {
+      if (st.reason === 'stalemate') return 'stalemate';
+      if (st.reason === 'threefold') return 'repeat';
+      return 'draw';
+    }
+    if (!st && isStalemate(chess)) return 'stalemate';
+    return '';
+  }
+
   /* ---------------------------------------------------------------------------------------- puzzle moves */
 
   async function puzzleMove(ctx, mv) {
-    if (!alive(ctx) || ctx.busy || ctx.done) return;
+    if (!alive(ctx) || ctx.busy || ctx.done || ctx.over) return;
     const chess = ctx.chess;
     const from = toSq(mv && mv.from), to = toSq(mv && mv.to);
     if (!onBoard(from) || !onBoard(to)) return;
@@ -3214,14 +3858,33 @@
     // «↻ Заново» or leaving during the slide: this old move must not count
     if (!alive(ctx) || ctx.gen !== gen) return;
     refreshCheck(chess);
+    if (ctx.pkind === 'endgame') { endgameAfterWhite(ctx, m, gen); return; }
     if (isMate(chess)) {
       puzzleSuccess(ctx, m);
       return;
     }
-    if (ctx.pkind === 'mate2' && ctx.step === 1) mate2First(ctx, before, m, gen);
+    if (MATE_N[ctx.pkind] > 1) mateStep(ctx, before, m, gen);
+    else if (ctx.pkind === 'save') saveMove(ctx, m, gen);
     else if (ctx.pkind === 'win' && ctx.step === 1) winFirst(ctx, m, gen);
     else if (ctx.pkind === 'win') winFinish(ctx, m, gen);
     else mateMiss(ctx, m, gen);
+  }
+
+  /* a wrong move: count it, sound, the trainer's streak starts over (said kindly), the explanation */
+  function missed(ctx, text) {
+    ctx.mistakes++;
+    snd('wrong');
+    let extra = '';
+    if (ctx.trainer && ctx.mistakes === 1) {
+      const t = trainerState();
+      if (t.streak > 0) {
+        t.streak = 0;
+        storeTrainer();
+        updatePuzzleMeter(ctx);
+        extra = ' Серия начнётся заново — не беда!';
+      }
+    }
+    tell(withHintTip(ctx, text + extra), 'think');
   }
 
   /* take the child's last move back after an explanation (the position before it: the start or Black's answer) */
@@ -3238,18 +3901,17 @@
       if (ctx.reply) V('setLastMove', ctx.reply.from, ctx.reply.to);
       else V('clearLastMove');
       refreshCheck(chess);
+      restorePuzzleMarks(ctx);
       ctx.busy = false;
       afterRevert(ctx);
     }, delay);
   }
 
-  /* a mating try that is not mate (mate-in-1 puzzles, the 2nd move of mate-in-2) */
+  /* a mating try that is not mate (mate-in-1 puzzles, the last move of mate in 2 / 3) */
   function mateMiss(ctx, m, gen) {
-    ctx.mistakes++;
-    snd('wrong');
     // why it isn't mate: stalemate / the king can run (its squares) / the checker can be eaten / the check can be blocked
     const info = notMateInfo(ctx.chess);
-    tell(withHintTip(ctx, info.text), 'think');
+    missed(ctx, info.text);
     showMarks(info.marks);
     revertPuzzleMove(ctx, m, gen, info.slow ? 1600 : 1300);
   }
@@ -3272,9 +3934,9 @@
     return mv;
   }
 
-  /* the second step begins: the board is the child's again */
-  function startStep2(ctx, text) {
-    ctx.step = 2;
+  /* the next step begins (Black has answered): the board is the child's again */
+  function startNextStep(ctx, text) {
+    ctx.step++;
     ctx.hintStep = 0;
     ctx.busy = false;
     updatePuzzleMeter(ctx);
@@ -3285,23 +3947,28 @@
 
   function replyFailed(ctx) {
     ctx.busy = false;
+    ctx.thinking = false;
     attention(ctx, '.lr-restart', true);
     tell('Ой! Что-то пошло не так. Нажми «↻ Заново».', 'sad');
   }
 
-  function mate2First(ctx, before, m, gen) {
+  /*
+   * Mate in N (2 or 3), a move that is not mate yet: it must keep a forced mate with the moves left
+   * (Lessons.isMateInMove). Right → Black defends (Lessons.bestDefenseN) → the next step; wrong → why + take it back.
+   */
+  function mateStep(ctx, before, m, gen) {
     const chess = ctx.chess;
-    if (!mate2Ok(before, m, chess)) {
-      ctx.mistakes++;
-      snd('wrong');
+    const r = remainingOf(ctx);
+    if (r <= 1) { mateMiss(ctx, m, gen); return; }
+    if (!mateInMoveOk(before, m, chess, r)) {
       let text = 'Так соперник убежит. Попробуй другой ход!', marks = [], delay = 1500;
       if (!legalMoves(chess).length) {
-        const info = notMateInfo(chess, true);   // stalemate (the right first move may well be a quiet one)
+        const info = notMateInfo(chess, true);   // stalemate (the right move may well be a quiet one)
         text = info.text;
         marks = info.marks;
         delay = 1800;
       } else {
-        const run = escapeReply(chess);
+        const run = escapeReplyN(chess, r - 1);
         if (run) {
           marks = [{ from: run.from, to: run.to }];
           delay = 2000;
@@ -3310,33 +3977,32 @@
               'Так соперник спасётся. Попробуй другой ход!';
           }
         }
-        if (ctx.pz.fail) text = String(ctx.pz.fail);
+        if (ctx.step === 1 && ctx.pz.fail) text = String(ctx.pz.fail);
       }
-      tell(withHintTip(ctx, text), 'think');
+      missed(ctx, text);
       showMarks(marks);
       revertPuzzleMove(ctx, m, gen, delay);
       return;
     }
-    // a right first move: Black answers, then the child mates
+    // a right move: Black answers, then the child goes on
     if (inCheck(chess)) snd('check');
     V('setPieceState', m.to, 'happy', 1400);
-    say('Хороший ход! Посмотрим, что ответит соперник…', { mood: 'happy' });
+    say(ctx.step === 1 ? 'Хороший ход! Посмотрим, что ответит соперник…' : 'Отлично! Что теперь ответит соперник?', { mood: 'happy' });
     later(async function () {
       if (!alive(ctx) || ctx.gen !== gen) return;
-      const r = blackDefense(chess);
-      if (!r) { replyFailed(ctx); return; }
-      const mv = await playBlack(ctx, r, gen);
+      const reply = defenseN(chess, r);
+      if (!reply) { replyFailed(ctx); return; }
+      const mv = await playBlack(ctx, reply, gen);
       if (mv === null) return;
       if (!mv) { replyFailed(ctx); return; }
-      startStep2(ctx, 'Теперь поставь мат!');
+      const left = r - 1;
+      startNextStep(ctx, left <= 1 ? 'Теперь поставь мат!' : 'Твой ход! До мата ' + plural(left, 'остался', 'осталось', 'осталось') + ' ' + movesWord(left) + '.');
     }, 700);
   }
 
   function winFirst(ctx, m, gen) {
     const chess = ctx.chess, pz = ctx.pz;
     if (!isSolution(pz, m)) {
-      ctx.mistakes++;
-      snd('wrong');
       const th = threatOn(chess, m.piece & 24, m.to);
       let text, marks = [];
       if (th) {
@@ -3346,7 +4012,7 @@
       } else {
         text = pz.fail ? String(pz.fail) : 'Так фигуру не выиграть. Попробуй другой ход!';
       }
-      tell(withHintTip(ctx, text), 'think');
+      missed(ctx, text);
       showMarks(marks);
       revertPuzzleMove(ctx, m, gen, marks.length ? 2000 : 1500);
       return;
@@ -3370,7 +4036,7 @@
         const nm = nameOf(mv.captured & 7);
         text = 'Соперник съел ' + possAcc(nm) + ' ' + nm.acc + '… А теперь забирай добычу!';
       }
-      startStep2(ctx, text);
+      startNextStep(ctx, text);
     }, 700);
   }
 
@@ -3379,11 +4045,451 @@
       puzzleSuccess(ctx, m);
       return;
     }
-    ctx.mistakes++;
-    snd('wrong');
-    tell(withHintTip(ctx, m.captured ? 'Это маленькая добыча. Найди фигуру побольше!' :
-      'Сейчас нужно забрать фигуру соперника! Посмотри, кого можно съесть.'), 'think');
+    missed(ctx, m.captured ? 'Это маленькая добыча. Найди фигуру побольше!' :
+      'Сейчас нужно забрать фигуру соперника! Посмотри, кого можно съесть.');
     revertPuzzleMove(ctx, m, gen, 1400);
+  }
+
+  /* «Спасайся!»: only the listed moves hold; anything else → what Black does then (the threat arrow again) */
+  function saveMove(ctx, m, gen) {
+    if (isSolution(ctx.pz, m)) {
+      puzzleSuccess(ctx, m);
+      return;
+    }
+    const pun = punishment(ctx.chess, ctx.threat);
+    missed(ctx, pun.sure || !ctx.pz.fail ? pun.text : String(ctx.pz.fail));
+    showMarks(pun.marks);
+    revertPuzzleMove(ctx, m, gen, 2200);
+  }
+
+  /* ---------------------------------------------------------------------------------------- endgames */
+
+  /* the child's move is on the board: goal? draw? out of moves? → else Black thinks a moment and answers */
+  function endgameAfterWhite(ctx, m, gen) {
+    const chess = ctx.chess;
+    const F = FLAG();
+    ctx.moves++;
+    // the bubble still shows a hint line about THIS move («Смотри на стрелку…», «Сейчас подумаю…»)
+    const hintTalk = ctx.hintStep > 0 || ctx.hintWait != null;
+    ctx.hintStep = 0;
+    ctx.hintMove = null;
+    ctx.hintWait = null;
+    // «Проведи пешку в ферзи!»: a knight / rook / bishop is not the goal (a knight is even a dead draw) — say so kindly
+    if (ctx.goalKind === 'promote' && ((m.flags | 0) & F.PROMO) && (m.promotion & 7) !== QUEEN) {
+      endgameFail(ctx, 'underpromo', m);
+      return;
+    }
+    if (ctx.goalKind === 'mate' ? isMate(chess) :
+      (((m.flags | 0) & F.PROMO) && !threatOn(chess, WHITE, m.to) && !isStalemate(chess))) {
+      endgameWin(ctx, m);
+      return;
+    }
+    const draw = drawReason(chess);
+    if (draw) { endgameFail(ctx, draw); return; }
+    if (ctx.moves >= ctx.maxMoves) { endgameFail(ctx, 'moves'); return; }
+    ctx.thinking = true;
+    updatePuzzleMeter(ctx);
+    later(async function () {
+      if (!alive(ctx) || ctx.gen !== gen) return;
+      const r = endgameReplyMove(chess);   // a real search: may take up to a second (the «думает…» is on screen)
+      if (!alive(ctx) || ctx.gen !== gen) return;
+      ctx.thinking = false;
+      if (!r) { updatePuzzleMeter(ctx); replyFailed(ctx); return; }
+      const mv = await playBlack(ctx, r, gen);
+      if (mv === null) return;
+      if (!mv) { updatePuzzleMeter(ctx); replyFailed(ctx); return; }
+      if (mv.captured && (mv.captured & 24) === WHITE) { endgameFail(ctx, 'lost', mv); return; }
+      const d = drawReason(chess);
+      if (d) { endgameFail(ctx, d); return; }
+      if (ctx.goalKind === 'promote' && officers(chess) > ctx.officers) { endgameWin(ctx, null); return; }
+      ctx.busy = false;
+      updatePuzzleMeter(ctx);
+      // the arrow / pulse of that hint is gone now: don't leave its words in the bubble (quietly, no voice)
+      if (hintTalk) say(endgameStartLine(ctx), { mood: 'happy', speak: false });
+      endgameTip(ctx);
+      runPendingHint(ctx);
+    }, 520);
+  }
+
+  /* Black's defence: Lessons.endgameReply (strong, deterministic); the engine or any legal move as a fallback */
+  function endgameReplyMove(chess) {
+    const legal = legalMoves(chess);
+    if (!legal.length) return null;
+    const L = lessonsLib();
+    if (L && typeof L.endgameReply === 'function') {
+      const hit = pickLegal(legal, safe(function () { return L.endgameReply(chess.clone()); }, null));
+      if (hit) return hit;
+    }
+    const AI = global.ChessAI;
+    if (AI && typeof AI.chooseMove === 'function') {
+      const hit = pickLegal(legal, safe(function () { return AI.chooseMove(chess.clone(), 'hint'); }, null));
+      if (hit) return hit;
+    }
+    return pickLegal(legal, legal[Math.floor(Math.random() * legal.length)]);
+  }
+
+  function endgameTip(ctx) {
+    const left = ctx.maxMoves - ctx.moves;
+    if (left === 5 || left === 10) {
+      tell('Осталось ' + movesWord(left) + '! ' + (ctx.goalKind === 'promote' ? 'Веди пешку вперёд!' : 'Прижимай короля к краю!'),
+        left === 5 ? 'warn' : 'think');
+    }
+  }
+
+  function endgameFail(ctx, reason, mv) {
+    ctx.over = true;
+    ctx.busy = false;
+    ctx.thinking = false;
+    dropPendingHint(ctx);
+    V('setInteractive', false);
+    const promote = ctx.goalKind === 'promote';
+    let text, emoji = '💪';
+    if (reason === 'stalemate') {
+      const k = kingSq(ctx.chess, BLACK);
+      if (k >= 0) V('pulseSquare', k, 'danger');
+      text = 'Ой, это пат — ничья! Королю соперника некуда ходить, но шаха нет. Оставляй ему хотя бы одну клетку!';
+      emoji = '🤝';
+      snd('draw');
+    } else if (reason === 'repeat') {
+      text = 'Позиция повторилась три раза — это ничья. Не ходи туда-обратно, прижимай короля!';
+      emoji = '🤝';
+      snd('draw');
+    } else if (reason === 'lost' && mv) {
+      const nm = nameOf(mv.captured & 7);
+      V('setPieceState', mv.to, 'happy', 2000);
+      text = 'Ой, соперник съел ' + possAcc(nm) + ' ' + nm.acc + '! ' +
+        ((mv.captured & 7) === PAWN ? 'Веди пешку вместе с королём — он её защитит.' : 'Держи фигуры подальше от чужого короля.');
+      emoji = '🙈';
+      snd('wrong');
+    } else if (reason === 'underpromo' && mv) {
+      V('pulseSquare', mv.to, 'danger');
+      text = 'Пешка превратилась в ' + nameOf(mv.promotion & 7).acc + ', а нужен ферзь! Нажми «↻ Заново» и выбери ферзя — он самый сильный.';
+      emoji = '👑';
+      snd('wrong');
+    } else if (reason === 'moves') {
+      text = promote ? 'Ходы закончились, а пешка ещё не стала ферзём. Помогай ей королём — и всё получится!' :
+        'Ходы закончились, а мата пока нет. Прижимай короля к краю доски — и всё получится!';
+      emoji = '⏳';
+      snd('wrong');
+    } else {
+      text = 'Это ничья. Попробуй ещё раз!';
+      emoji = '🤝';
+      snd('draw');
+    }
+    updatePuzzleMeter(ctx);
+    say(text, { mood: 'sad' });
+    attention(ctx, '.lr-restart', true);
+    later(function () {
+      if (!alive(ctx) || !ctx.over) return;
+      openModal({
+        emoji: emoji,
+        title: 'Попробуй ещё раз!',
+        html: '<div class="lr-result"><p class="lr-result-text">' + esc(text) + '</p></div>',
+        buttons: [
+          { label: '↻ Заново', kind: 'primary', onClick: function () { restartPuzzle(ctx); } },
+          { label: 'К задачкам', kind: 'ghost', onClick: function () { renderPuzzles({ set: ctx.set.id }); } }
+        ],
+        onClose: function () { tell('Нажми «↻ Заново» — у тебя получится!', 'happy', false); }
+      });
+    }, 1700);
+  }
+
+  function endgameWin(ctx, m) {
+    const chess = ctx.chess;
+    ctx.done = true;
+    ctx.busy = false;
+    ctx.thinking = false;
+    dropPendingHint(ctx);
+    V('setInteractive', false);
+    const mate = isMate(chess);
+    if (mate) {
+      const k = kingSq(chess, chess.turn);
+      if (k >= 0) V('tipKing', k);
+      snd('win');
+    } else {
+      snd('levelComplete');
+      const c = m ? V('squareCenter', m.to) : null;
+      if (c) fx('burst', c.x, c.y, { shape: 'star', count: 30 });
+    }
+    fx('confetti');
+    V('setSideState', 'w', 'happy', 3000);
+    const fast = ctx.moves <= ctx.par;
+    const stars = fast && !ctx.hintUsed ? 2 : 1;
+    const rec = recordPuzzle(ctx, stars);
+    const lines = [(mate ? 'Мат за ' : 'Пешка стала ферзём за ') + movesWord(ctx.moves) + '!'];
+    if (ctx.hintUsed) lines.push('С подсказкой — одна звезда. Попробуй потом сам!');
+    else lines.push(fast ? 'Это очень быстро — лучший результат!' : 'А можно быстрее — за ' + movesWord(ctx.par) + '. Попробуешь?');
+    if (rec.allDone) {
+      lines.push('Ты решил все задачки «' + ctx.set.title + '»! ' + (KIND_MASTER.endgame || ''));
+      later(function () { fx('fireworks', 2600); }, 700);
+    }
+    say((mate ? 'Мат! ' : 'Ура! ') + lines[0], { mood: 'wow' });
+    later(function () {
+      if (!alive(ctx)) return;
+      openModal({
+        emoji: mate ? '👑' : '🎉',
+        title: mate ? 'Мат! 🎉' : 'Новый ферзь! 🎉',
+        html: resultHtml(stars, 2, lines, rec.gained),
+        buttons: [
+          { label: 'Следующая задачка ➜', kind: 'green', onClick: function () { nextPuzzle(ctx, true); } },
+          { label: '↻ Ещё раз', kind: 'secondary', onClick: function () { restartPuzzle(ctx); } }
+        ],
+        onClose: function () { tell('Нажми «➜ Следующая», чтобы сыграть новую задачку!', 'happy', false); }
+      });
+      starSounds(stars);
+    }, 1500);
+  }
+
+  /* ---------------------------------------------------------------------------------------- engine hints (endgames) */
+
+  /* the hint engine: ChessAI in a worker (js/ai-worker.js) so the board stays responsive; the main thread after a
+     setTimeout when workers are unavailable (file://, the artifact) or the worker fails */
+  function hintAI() {
+    if (S.hintAI) return S.hintAI;
+    const A = { worker: null, seq: 0, waiting: {} };
+    S.hintAI = A;
+    const fail = function () {
+      const w = A.worker;
+      A.worker = null;
+      if (w) safe(function () { w.terminate(); });
+      Object.keys(A.waiting).forEach(function (k) {
+        const cb = A.waiting[k];
+        delete A.waiting[k];
+        setTimeout(function () { cb(undefined); }, 0);
+      });
+    };
+    if (typeof global.Worker === 'function' && global.location && global.location.protocol !== 'file:') {
+      try {
+        A.worker = new global.Worker('js/ai-worker.js');
+        A.worker.onmessage = function (ev) {
+          const d = ev && ev.data;
+          const cb = d && A.waiting[d.id];
+          if (!cb) return;
+          delete A.waiting[d.id];
+          cb(d.error ? undefined : (d.move || null));
+        };
+        A.worker.onerror = function (ev) {
+          safe(function () { if (ev && ev.preventDefault) ev.preventDefault(); });
+          fail();
+        };
+      } catch (e) {
+        A.worker = null;
+      }
+    }
+    return A;
+  }
+
+  /* game = { fen, startFen, moves: [{from, to, promotion}] }: the whole game, so the engine knows the positions that
+     were already on the board (a hint must never walk into a draw by repetition) */
+  function localHint(game) {
+    const AI = global.ChessAI, C = CH();
+    if (!AI || typeof AI.chooseMove !== 'function' || !C) return null;
+    return safe(function () {
+      let c = new C(game.startFen || game.fen);
+      if (game.startFen) {
+        const ok = game.moves.every(function (m) { return !!c.move(m); });
+        if (!ok || c.fen() !== game.fen) c = new C(game.fen);
+      }
+      const r = AI.chooseMove(c, 'hint');
+      return r ? { from: r.from, to: r.to, promotion: r.promotion || 0 } : null;
+    }, null);
+  }
+
+  /* → Promise of the engine's best move {from, to, promotion} | null for the side to move (game: see localHint) */
+  function engineHint(game) {
+    return new Promise(function (resolve) {
+      const A = hintAI();
+      const local = function () { setTimeout(function () { resolve(localHint(game)); }, 30); };
+      if (!A.worker) { local(); return; }
+      const id = ++A.seq;
+      const t = setTimeout(function () {
+        if (!A.waiting[id]) return;
+        delete A.waiting[id];
+        local();
+      }, 7000);
+      A.waiting[id] = function (mv) {
+        clearTimeout(t);
+        if (mv === undefined) local();
+        else resolve(mv);
+      };
+      try {
+        A.worker.postMessage({ id: id, fen: game.fen, startFen: game.startFen, moves: game.moves, level: 'hint' });
+      } catch (e) {
+        delete A.waiting[id];
+        clearTimeout(t);
+        local();
+      }
+    });
+  }
+
+  /* endgame hint: the engine's best move (a mate in 1 at once); the board stays playable while it thinks */
+  function endgameHint(ctx) {
+    const chess = ctx.chess;
+    const fen = safe(function () { return chess.fen(); }, '');
+    const use = function (mv) {
+      const h = pickLegal(legalMoves(chess), mv);
+      if (!h) { tell(ctx.goalKind === 'promote' ? 'Веди пешку вперёд вместе с королём!' : 'Прижимай короля к краю доски!', 'think'); return; }
+      ctx.hintUsed = true;
+      showHintStep(ctx, h);
+      updatePuzzleMeter(ctx);
+    };
+    if (ctx.hintMove && ctx.hintMove.fen === fen) { use(ctx.hintMove.move); return; }
+    const mates = safe(function () { return chess.mateInOne(); }, []) || [];
+    if (mates.length) {
+      ctx.hintMove = { fen: fen, move: normMove(mates[0]) };
+      use(ctx.hintMove.move);
+      return;
+    }
+    if (ctx.hintWait === fen) { snd('click'); return; }
+    ctx.hintWait = fen;
+    snd('click');
+    tell('Сейчас подумаю…', 'think', false);
+    const gen = ctx.gen, moves = ctx.moves;
+    const history = (safe(function () { return chess.history(); }, []) || []).map(function (m) {
+      return { from: m.from, to: m.to, promotion: m.promotion ? (m.promotion & 7) : 0 };
+    });
+    engineHint({ fen: fen, startFen: ctx.pz.fen, moves: history }).then(function (mv) {
+      if (!alive(ctx) || ctx.gen !== gen || ctx.moves !== moves || ctx.done || ctx.over) return;
+      ctx.hintWait = null;
+      if (!mv) { tell(ctx.goalKind === 'promote' ? 'Веди пешку вперёд вместе с королём!' : 'Прижимай короля к краю доски!', 'think'); return; }
+      ctx.hintMove = { fen: fen, move: mv };
+      if (ctx.busy) { queueHint(ctx); return; }
+      use(mv);
+    });
+  }
+
+  /* ---------------------------------------------------------------------------------------- trainer */
+
+  function trainerState() {
+    if (!S.trainer) {
+      let streak = 0, best = 0;
+      try {
+        const raw = global.localStorage ? global.localStorage.getItem(TRAINER_KEY) : null;
+        const o = raw ? JSON.parse(raw) : null;
+        if (o && typeof o === 'object') {
+          streak = Math.max(0, Math.floor(num(o.streak, 0)));
+          best = Math.max(streak, Math.floor(num(o.best, 0)));
+        }
+      } catch (e) { /* storage may be blocked or broken: start from zero */ }
+      S.trainer = { streak: streak, best: best, queue: [], last: null };
+    }
+    return S.trainer;
+  }
+
+  function storeTrainer() {
+    const t = trainerState();
+    try {
+      if (global.localStorage) global.localStorage.setItem(TRAINER_KEY, JSON.stringify({ streak: t.streak, best: t.best }));
+    } catch (e) { /* storage may be blocked */ }
+  }
+
+  /* the next trainer puzzle: a random one of the first unsolved (the pool goes easy → hard), then shuffled replays */
+  function pickTrainer(set) {
+    const t = trainerState();
+    const list = set.puzzles;
+    const unsolved = [];
+    for (let i = 0; i < list.length && unsolved.length <= TRAINER_WINDOW; i++) {
+      if (!puzzleStars(list[i], i)) unsolved.push(i);
+    }
+    let pool = unsolved.filter(function (i) { return String(list[i].id) !== t.last; }).slice(0, TRAINER_WINDOW);
+    if (!pool.length) pool = unsolved;
+    if (pool.length) return pool[Math.floor(Math.random() * pool.length)];
+    if (!t.queue.length || t.queue.some(function (i) { return i >= list.length; })) {
+      t.queue = list.map(function (_, i) { return i; });
+      for (let i = t.queue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const x = t.queue[i]; t.queue[i] = t.queue[j]; t.queue[j] = x;
+      }
+    }
+    let i = t.queue.shift();
+    if (list.length > 1 && String(list[i].id) === t.last) {
+      t.queue.push(i);
+      i = t.queue.shift();
+    }
+    return i;
+  }
+
+  function openTrainer(setId) {
+    const sets = puzzleSets();
+    const set = findSet(sets, setId);
+    const tr = set && set.endless ? set : trainerSet(sets);
+    if (!tr) { renderPuzzles(); return; }
+    openPuzzle(pickTrainer(tr), tr.id);
+  }
+
+  function streakTitle(n) {
+    if (n === 5) return '5 подряд! Ты в ударе!';
+    if (n === 10) return '10 подряд! Как молния!';
+    if (n === 20) return '20 подряд! Невероятно!';
+    return n + ' подряд! Вот это да!';
+  }
+
+  /* a solved trainer puzzle: +1 ⭐ the first time, the streak grows (not with a hint), little parties at 5/10/20 */
+  function trainerSuccess(ctx, m, mate) {
+    const t = trainerState();
+    const p = profile();
+    const key = puzzleKey(ctx.pz, ctx.idx);
+    const first = !starsVal(p.puzzles[key], 2);
+    if (first) p.puzzles[key] = 1;
+    save();
+    if (first) addStars(1, hostFrom(ctx));
+    const hinted = !!(ctx.hintUsed || ctx.hintEver);
+    const clean = !ctx.mistakes && !ctx.missEver && !hinted;
+    let record = false;
+    if (clean) {
+      t.streak++;
+      if (t.streak > t.best) { t.best = t.streak; record = t.streak >= 3; }
+    }
+    storeTrainer();
+    puzzleAchievements();
+    updatePuzzleMeter(ctx);
+    const party = clean && (STREAK_PARTY.indexOf(t.streak) >= 0 || (t.streak > 20 && t.streak % 10 === 0));
+    const lines = [puzzleWinLine(m, mate)];
+    if (clean) {
+      lines.push(t.streak === 1 ? 'Серия началась — решай дальше!' : record ? 'Это твой новый рекорд!' : 'Так держать!');
+    } else if (hinted) {
+      lines.push('С подсказкой серия не растёт. Следующую попробуй сам!');
+    } else {
+      lines.push('Серия начнётся с новой задачки. У тебя получится!');
+    }
+    if (party) {
+      later(function () { fx('fireworks', 2600); snd('achievement'); }, 600);
+    }
+    const c = countSolved(ctx.list);
+    say((party ? streakTitle(t.streak) + ' ' : '') + (mate ? 'Мат! ' : '') + lines[0], { mood: 'wow' });
+    later(function () {
+      if (!alive(ctx)) return;
+      openModal({
+        emoji: party ? '🔥' : mate ? '🏆' : '⚔️',
+        title: party ? streakTitle(t.streak) : mate ? 'Мат! 🎉' : 'Решено! 🎉',
+        // «🔥 0 задачек подряд» would greet a solved puzzle with a zero: the big streak only when there is one
+        html: '<div class="lr-result lr-tr-result">' +
+          (t.streak > 0 ? '<div class="lr-tr-big' + (party ? ' party' : '') + '"><span>🔥</span><b>' + t.streak + '</b><em>' +
+            plural(t.streak, 'задачка', 'задачки', 'задачек') + ' подряд</em></div>' : '') +
+          lines.map(function (l) { return '<p class="lr-result-text">' + esc(l) + '</p>'; }).join('') +
+          '<p class="lr-result-text lr-tr-sub">Решено ' + c.solved + ' из ' + c.total + ' · рекорд: ' + t.best + '</p>' +
+          (first ? '<div class="lr-result-reward">+1 ⭐</div>' : '') +
+          '</div>',
+        buttons: [
+          { label: 'Ещё задачка ➜', kind: 'green', onClick: function () { openTrainer(ctx.set.id); } },
+          { label: 'К задачкам', kind: 'ghost', onClick: function () { renderPuzzles(); } }
+        ],
+        onClose: function () { tell('Нажми «Ещё задачка ➜» — продолжим тренировку!', 'happy', false); }
+      });
+    }, 1300);
+  }
+
+  /* ---------------------------------------------------------------------------------------- results */
+
+  /* «Мат рокировкой»: the puzzle is about castling, but a plain move mated too → «А ещё можно было рокировкой!» */
+  function castleMateMissed(ctx, m) {
+    const F = FLAG();
+    const h = ctx && ctx.pz && ctx.pz.hint ? anyMove(ctx.pz.hint) : null;
+    if (!h || !m || ((m.flags | 0) & F.CASTLE)) return '';
+    const start = safe(function () { const C = CH(); return C ? new C(ctx.pz.fen) : null; }, null);
+    const p = start ? getP(start, h.from) : 0;
+    if (!p || (p & 7) !== KING || Math.abs((h.to & 7) - (h.from & 7)) !== 2) return '';
+    return 'А ещё можно было поставить мат рокировкой — попробуй!';
   }
 
   function puzzleWinLine(m, mate) {
@@ -3398,11 +4504,47 @@
     if (countSolved(allPuzzles()).solved >= 5) unlock('puzzles_5');
     const m1 = kindProgress('mate1');
     if (m1.total && m1.solved >= m1.total) unlock('puzzles_all');   // «Мастер мата» = all mate-in-1 puzzles
-    [['mate2', 'mate2_first', 'mate2_all'], ['win', 'win_first', 'win_all']].forEach(function (a) {
+    [['mate2', 'mate2_first', 'mate2_all'], ['win', 'win_first', 'win_all'], ['mate3', 'mate3_first', 'mate3_all'],
+      ['save', 'save_first', 'save_all'], ['endgame', 'endgame_first', 'endgame_all']].forEach(function (a) {
       const k = kindProgress(a[0]);
       if (k.solved >= 1) unlock(a[1]);
       if (k.total && k.solved >= k.total) unlock(a[2]);
     });
+    const tr = trainerSet();
+    if (tr) {
+      const c = countSolved(tr.puzzles);
+      if (c.solved >= 10) unlock('trainer_10');
+      if (c.solved >= 50) unlock('trainer_50');
+    }
+    if (trainerState().best >= 10) unlock('trainer_streak_10');
+  }
+
+  /* saves the result (the better one wins), adds the new stars, awards → { gained, allDone: the set just completed } */
+  function recordPuzzle(ctx, stars) {
+    const p = profile();
+    const key = puzzleKey(ctx.pz, ctx.idx);
+    const prev = starsVal(p.puzzles[key], 2);
+    const was = countSolved(ctx.list);
+    let gained = 0;
+    if (stars > prev) {
+      p.puzzles[key] = stars;
+      gained = stars - prev;
+    }
+    save();
+    if (gained > 0) addStars(gained, hostFrom(ctx));
+    const got = countSolved(ctx.list);
+    puzzleAchievements();
+    updatePuzzleMeter(ctx);
+    return { gained: gained, allDone: was.solved < was.total && got.solved >= got.total };
+  }
+
+  /* «Спасайся!» solved: the threatened square shines, a shield floats up */
+  function showDefused(ctx) {
+    const th = ctx.threat;
+    if (!th) return;
+    V('pulseSquare', th.to, 'good');
+    const c = V('squareCenter', th.to);
+    if (c) fx('floatText', c.x, c.y - 10, '🛡️', { size: 44 });
   }
 
   function puzzleSuccess(ctx, m) {
@@ -3424,26 +4566,17 @@
     }
     fx('confetti');
     V('setSideState', 'w', 'happy', 3000);
+    const isSave = ctx.pkind === 'save';
+    if (isSave) showDefused(ctx);
+    if (ctx.trainer) { trainerSuccess(ctx, m, mate); return; }
 
     const stars = ctx.hintUsed ? 1 : 2;
-    const p = profile();
-    const key = puzzleKey(ctx.pz, ctx.idx);
-    const prev = starsVal(p.puzzles[key], 2);
-    const was = countSolved(ctx.list);
-    let gained = 0;
-    if (stars > prev) {
-      p.puzzles[key] = stars;
-      gained = stars - prev;
-    }
-    save();
-    if (gained > 0) addStars(gained, hostFrom(ctx));
-    const got = countSolved(ctx.list);
-    puzzleAchievements();
-    updatePuzzleMeter(ctx);
-
-    const line = puzzleWinLine(m, mate);
+    const rec = recordPuzzle(ctx, stars);
+    const line = isSave && !mate ? saveWinLine(ctx, m) : puzzleWinLine(m, mate);
     const lines = [line, stars === 2 ? 'Сам, без подсказки — две звезды!' : 'С подсказкой — одна звезда. Реши потом сам — и получишь ещё одну!'];
-    if (was.solved < was.total && got.solved >= got.total) {
+    const castleToo = mate ? castleMateMissed(ctx, m) : '';
+    if (castleToo) lines.splice(1, 0, castleToo);
+    if (rec.allDone) {
       lines.push('Ты решил все задачки «' + ctx.set.title + '»! ' + (KIND_MASTER[ctx.pkind] || ''));
       later(function () { fx('fireworks', 2600); }, 700);
     }
@@ -3451,9 +4584,9 @@
     later(function () {
       if (!alive(ctx)) return;
       openModal({
-        emoji: mate ? '🏆' : '⚔️',
-        title: mate ? 'Мат! 🎉' : 'Фигура твоя! 🎉',
-        html: resultHtml(stars, 2, lines, gained),
+        emoji: mate ? '🏆' : isSave ? '🛡️' : '⚔️',
+        title: mate ? 'Мат! 🎉' : isSave ? 'Спасено! 🎉' : 'Фигура твоя! 🎉',
+        html: resultHtml(stars, 2, lines, rec.gained),
         buttons: [
           { label: 'Следующая задачка ➜', kind: 'green', onClick: function () { nextPuzzle(ctx, true); } },
           { label: 'К задачкам', kind: 'ghost', onClick: function () { renderPuzzles({ set: ctx.set.id }); } }
@@ -3467,27 +4600,38 @@
   /* hints per step: the 1st press pulses the piece to move, the 2nd shows the arrow */
   function puzzleHint(ctx) {
     if (!alive(ctx)) return;
+    if (ctx.over) { tell('Нажми «↻ Заново» — и попробуй ещё раз!', 'happy'); return; }
     if (ctx.busy && !ctx.done) { queueHint(ctx); return; }
-    if (ctx.done) { tell('Задачка решена! Нажми «➜ Следующая».', 'happy'); return; }
+    if (ctx.done) { tell(ctx.trainer ? 'Задачка решена! Нажми «Ещё задачка ➜».' : 'Задачка решена! Нажми «➜ Следующая».', 'happy'); return; }
     const chess = ctx.chess, pz = ctx.pz;
+    if (ctx.pkind === 'endgame') { endgameHint(ctx); return; }
     const firstMate = function () {
       const ms = safe(function () { return chess.mateInOne(); }, []) || [];
       return ms.length ? normMove(ms[0]) : null;
     };
-    let h = null, none = 'Ищи ход, после которого королю некуда деться!';
-    if (ctx.pkind === 'mate2' && ctx.step === 1) {
-      h = hintMoveFor(chess, pz.hint, function () { return findMate2Move(chess); });
-      none = 'Ищи ход, после которого королю соперника станет совсем тесно!';
-    } else if (ctx.pkind === 'win' && ctx.step === 1) {
-      const sols = solutionsOf(pz);
-      h = hintMoveFor(chess, sols[0] || pz.hint, function () {
+    const fromList = function (sols) {
+      return function () {
         const legal = legalMoves(chess);
         for (let i = 0; i < sols.length; i++) {
           const x = pickLegal(legal, sols[i]);
           if (x) return x;
         }
         return null;
-      });
+      };
+    };
+    let h = null, none = 'Ищи ход, после которого королю некуда деться!';
+    if (MATE_N[ctx.pkind] > 1) {
+      const r = remainingOf(ctx);
+      const finder = r <= 1 ? firstMate : function () { return mateHintMove(chess, r); };
+      h = hintMoveFor(chess, ctx.step === 1 ? pz.hint : null, finder);
+      none = 'Ищи ход, после которого королю соперника станет совсем тесно!';
+    } else if (ctx.pkind === 'save') {
+      const sols = solutionsOf(pz);
+      h = hintMoveFor(chess, sols[0] || pz.hint, fromList(sols));
+      none = 'Посмотри на красную стрелку: как помешать сопернику?';
+    } else if (ctx.pkind === 'win' && ctx.step === 1) {
+      const sols = solutionsOf(pz);
+      h = hintMoveFor(chess, sols[0] || pz.hint, fromList(sols));
       none = 'Поищи ход, который нападает на фигуры соперника!';
     } else if (ctx.pkind === 'win') {
       h = bestFinish(ctx);
@@ -3530,7 +4674,7 @@
     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
     snd('click');
     if (target === 'map') renderMap();
-    else renderPuzzles();
+    else renderPuzzles({ set: S.lastPuzzle ? S.lastPuzzle.set : undefined });
   }
 
   /* if App shows one of our sections by itself (e.g. its back button), render fresh content for it */
@@ -3610,6 +4754,11 @@
       findMate2Move: findMate2Move, isSolution: isSolution, threatOn: threatOn, forkTargets: forkTargets,
       safeFailInfo: safeFailInfo, forkFailInfo: forkFailInfo, targetsAcc: targetsAcc, notMateInfo: notMateInfo,
       returningV1: returningV1, isFreshSet: isFreshSet, newsGreeting: newsGreeting, tooSoon: tooSoon,
+      isV3: isV3, veteran3: veteran3, isNewSet: isNewSet, newsV3Greeting: newsV3Greeting, chapterRuns: chapterRuns,
+      mateInMoveOk: mateInMoveOk, mateMoves: mateMoves, defenseN: defenseN, escapeReplyN: escapeReplyN,
+      threatInfo: threatInfo, punishment: punishment, drawReason: drawReason, pickTrainer: pickTrainer,
+      trainerState: trainerState, solutionFailInfo: solutionFailInfo, CHAPTERS: CHAPTERS,
+      ownFailText: ownFailText, castleMateMissed: castleMateMissed,
       state: function () { return S; }
     }
   });

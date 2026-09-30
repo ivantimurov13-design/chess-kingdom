@@ -414,6 +414,19 @@ body[data-screen="home"] #btn-home { visibility: hidden; }
 .tile-puzzles .tile-title, .tile-puzzles .tile-sub { text-shadow: 0 1px 0 rgba(255, 255, 255, .45); }
 .tile-puzzles .tile-meta { background: rgba(255, 255, 255, .45); }
 .tile-awards  { --t1: #ff7ac1; --t2: #a978ff; --t3: #8646cf; }
+/* content added since the child's last visit (js/app.js renderTileNews) */
+.tile-new {
+  position: absolute; top: 14px; right: 14px;
+  padding: 5px 12px; border-radius: 999px;
+  background: linear-gradient(180deg, #ff9dca, var(--c-pink));
+  color: #fff; font-size: 15px; font-weight: 900; line-height: 1; white-space: nowrap;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, .15);
+  border: 3px solid #fff;
+  box-shadow: 0 3px 0 var(--c-pink-d), 0 6px 10px rgba(219, 67, 134, .3);
+  animation: tileNew 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes tileNew { 0%, 100% { transform: rotate(6deg) scale(1); } 50% { transform: rotate(-3deg) scale(1.1); } }
 
 /* ---------------------------------------------------------------------------------------- opponents */
 .color-pick { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 18px; margin-bottom: 20px; }
@@ -692,6 +705,61 @@ body[data-screen="home"] #btn-home { visibility: hidden; }
 .modal-welcome .welcome-mascot svg { width: 100%; height: 100%; }
 .welcome-say { font-size: 23px; font-weight: 900; margin-bottom: 16px; color: var(--c-ink); }
 .welcome-input { text-align: center; }
+
+/* «Новое в Королевстве!» (once per content version): two columns on wide screens, compact on phones —
+   the buttons must stay on screen without scrolling (iPad landscape 1180×820, phones) */
+.modal-news { width: min(780px, 100%); padding-top: 22px; }
+.modal-news .modal-emoji { font-size: 50px; margin-bottom: 0; }
+.modal-news .modal-title { font-size: 28px; margin-top: 0; }
+.news-hero { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; text-align: left; }
+.news-mascot { flex: none; width: 84px; height: 84px; animation: mascotBob 3s ease-in-out infinite; }
+.news-mascot svg { width: 100%; height: 100%; display: block; }
+.news-say {
+  position: relative; flex: 1; min-width: 0;
+  padding: 10px 14px; border-radius: 18px;
+  background: var(--c-soft); box-shadow: inset 0 0 0 2px var(--c-line);
+  font-size: 17px; font-weight: 900; line-height: 1.35; color: var(--c-ink);
+}
+.news-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; text-align: left; }
+.news-item {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 7px 12px 7px 7px; border-radius: 18px;
+  background: linear-gradient(90deg, #fff8e1, #fff);
+  box-shadow: inset 0 0 0 2px #ffe7a0;
+  animation: starPop .55s var(--ease-bounce) both; animation-delay: calc(.35s + var(--i, 0) * 110ms);
+}
+.news-item:first-child { grid-column: 1 / -1; }
+.news-ico {
+  flex: none; width: 44px; height: 44px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 24px; line-height: 1;
+  background: radial-gradient(circle at 35% 30%, #fffbe0, #ffd65a 60%, #f5a623); box-shadow: 0 3px 0 #d99a00;
+}
+.news-text { display: flex; flex-direction: column; min-width: 0; }
+.news-text b { font-size: 17px; font-weight: 900; line-height: 1.2; color: var(--c-ink); }
+.news-text small { font-size: 14px; font-weight: 800; color: var(--c-muted); line-height: 1.3; }
+.modal-news .modal-buttons { margin-top: 16px; }
+@media (max-width: 600px) {
+  .modal-news { padding: 18px 16px 18px; }
+  .modal-news .modal-emoji { display: none; }
+  .modal-news .modal-title { font-size: 24px; margin: 0 34px 10px; }
+  .news-hero { gap: 8px; margin-bottom: 10px; }
+  .news-mascot { width: 60px; height: 60px; }
+  .news-say { font-size: 15px; padding: 8px 11px; }
+  .news-list { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .news-item { padding: 5px 10px 5px 5px; }
+  .news-item:not(:first-child) small { display: none; }
+  .news-ico { width: 38px; height: 38px; font-size: 21px; }
+  .news-text b { font-size: 16px; }
+  .news-text small { font-size: 13px; }
+  .modal-news .modal-buttons { gap: 8px; margin-top: 12px; }
+  .modal-news .modal-buttons .btn { min-width: 130px; }
+}
+/* phones: the buttons in two columns (the first one across when there are three), so «Потом» stays on screen */
+@media (max-width: 420px) {
+  .modal-news .modal-buttons { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .modal-news .modal-buttons .btn { min-width: 0; min-height: 56px; padding: 10px 8px; font-size: 18px; }
+  .modal-news .modal-buttons .btn:first-child:nth-last-child(odd) { grid-column: 1 / -1; }
+}
 
 /* settings */
 .modal-settings { width: min(600px, 100%); text-align: left; }
